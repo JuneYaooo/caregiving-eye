@@ -119,6 +119,6 @@ flowchart TD
 
 感谢 [go2rtc](https://github.com/AlexxIT/go2rtc)、[xiaomi-onvif](https://github.com/SincereXIA/xiaomi-onvif)、[Ultralytics](https://github.com/ultralytics/ultralytics) 与 [ONNX Runtime](https://github.com/microsoft/onnxruntime) 提供基础能力。
 
-项目代码采用 [MIT License](./LICENSE)，模型权重遵循各自上游许可证。个人开源项目，与小米公司无隶属关系。
+项目代码采用 [MIT License](./LICENSE)，模型权重遵循各自上游许可证。
 
 **社区交流：[LINUX DO](https://linux.do/)**
