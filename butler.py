@@ -19,9 +19,16 @@ LEVEL_TAG = {
 
 # 各类事件最小通报间隔(秒), 防轰炸
 DEFAULT_COOLDOWN = {
-    'fall': 60, 'lying_long': 300, 'intrusion': 120, 'fire': 30,
-    'zone_dwell': 300, 'night_wander': 300, 'absence': 1800,
-    'cat_zone': 120, 'mode_change': 0, 'audio': 60,
+    # 无人值守
+    'intrusion': 120, 'fire': 30, 'fire_suspect': 120, 'fire_alarm_sound': 30,
+    'glass_break': 60, 'absence': 1800,
+    # 在家照护
+    'fall': 60, 'lying_long': 300, 'illness': 300, 'inactive': 1800,
+    'zone_dwell': 300, 'night_wander': 300,
+    'child_danger': 60, 'child_danger_watched': 300, 'child_alone': 900, 'baby_cry': 300,
+    # 宠物
+    'cat_zone': 120, 'pet_distress': 300, 'pet_unseen': 3600,
+    'mode_change': 0,
 }
 
 
@@ -39,6 +46,7 @@ class Butler:
         self.person_since = None         # 有人出现的起始时间
         self.person_absent_since = None
         self.schedule = self._parse_schedule(cfg('MODE_SCHEDULE', ''))
+        self._lock = threading.Lock()    # 声音线程与视频主循环会同时通报
 
     # ---------- 值班制度 ----------
     @staticmethod
@@ -112,8 +120,12 @@ class Butler:
         self.set_mode(mode, '%s指令' % self.owner)
 
     # ---------- 通报 ----------
-    def notify(self, level, text, event_type=None, cooldown=None, snapshot=None):
+    def notify(self, level, text, event_type=None, cooldown=None, snapshot=None, clip=None):
         """按执事口吻发通报; 返回 True=真的发了"""
+        with self._lock:
+            return self._notify(level, text, event_type, cooldown, snapshot, clip)
+
+    def _notify(self, level, text, event_type, cooldown, snapshot, clip):
         now = time.time()
         et = event_type or level
         cd = DEFAULT_COOLDOWN.get(et, 60) if cooldown is None else cooldown
@@ -130,7 +142,7 @@ class Butler:
         # 落盘
         rec = {'ts': time.strftime('%Y-%m-%d %H:%M:%S'), 'level': level,
                'mode': self.mode, 'type': et, 'text': full,
-               'snapshot': snapshot}
+               'snapshot': snapshot, 'clip': clip}
         with open(self.events_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(rec, ensure_ascii=False) + '\n')
         # 推送

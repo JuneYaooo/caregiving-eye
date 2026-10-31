@@ -5,3 +5,10 @@ requests
 PyNaCl
 cryptography
 python-dotenv
+
+# ---- 可选 ----
+# ByteTrack 跟踪 (TRACKER=bytetrack)
+# supervision>=0.20,<0.30
+# 把火焰烟雾 .pt 权重导出成 ONNX 时用一次，运行时不需要
+# ultralytics
+# 声音事件另需系统安装 ffmpeg

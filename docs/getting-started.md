@@ -30,9 +30,32 @@ Copy-Item .env.example .env
 | 文件 | 用途 |
 | --- | --- |
 | [yolov8n.onnx](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.onnx) | 必需，人 / 猫 / 狗检测 |
-| [yolov8n-pose.onnx](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n-pose.onnx) | v2 姿态原型使用；缺失时回退到检测框比例规则 |
+| [yolov8n-pose.onnx](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n-pose.onnx) | v2 姿态原型使用；跌倒、突发不适、儿童判定都依赖它，缺失时回退到检测框比例规则 |
 
 模型不随仓库分发。当前推理默认使用 ONNX Runtime 的 CPU 执行器，不要求 NVIDIA 显卡。
+
+#### 可选模型：按需下载，缺了对应能力会自动跳过
+
+| 能力 | 来源 | 放到 `models/` 后的文件名 |
+| --- | --- | --- |
+| 火焰 / 烟雾 | [rabahdev/fire-smoke-yolov8n](https://huggingface.co/rabahdev/fire-smoke-yolov8n)（D-Fire 数据集，类别 `smoke, fire`，AGPL-3.0） | `fire-smoke-yolov8n.onnx` |
+| 声音事件 | [audiomagic/yamnet-onnx](https://huggingface.co/audiomagic/yamnet-onnx)（Google YAMNet，AudioSet 521 类，Apache-2.0） | `yamnet.onnx` 与 `yamnet_class_map.csv` |
+
+火焰烟雾模型只提供 `.pt` 权重，需要导出一次 ONNX（只在导出时需要 ultralytics）：
+
+```powershell
+python -m pip install ultralytics
+yolo export model=best.pt format=onnx imgsz=640
+Move-Item best.onnx models\fire-smoke-yolov8n.onnx
+```
+
+其他 YOLOv8 火焰烟雾模型也能用，在 `.env` 中按模型类别顺序改 `FIRE_CLASSES`。声音事件还需要系统能找到 `ffmpeg`，且 go2rtc 输出的流带音频轨。
+
+想让多人交叉走动时的跟踪更稳，可以安装 [supervision](https://github.com/roboflow/supervision) 并设 `TRACKER=bytetrack`：
+
+```powershell
+python -m pip install "supervision>=0.20,<0.30"
+```
 
 ## 2. 接入摄像头
 
@@ -145,9 +168,33 @@ v2 接入 `Butler` 模式引擎、IoU 跟踪、姿态与区域规则。常见配
 | `MODE_SCHEDULE` | 值班日程，如 `23:00-07:00:night`；当前日程分支在未检出人时生效 |
 | `ALERT_WEBHOOK` | 可选的兼容转发服务地址；未配置转发服务时留空 |
 | `ZONE_DWELL_MIN` | 区域久滞阈值，单位为分钟 |
-| `MODELS_DIR` | 模型目录，默认 `models` |
+| `ABSENCE_MIN` | 多少分钟没看到人就发一条“家中无人”记录 |
+| `MODELS_DIR` / `EVENTS_DIR` | 模型目录与事件目录，默认 `models`、`events` |
+| `ILL_LYING_SEC` / `ILL_STILL_SEC` / `STILL_ALERT_MIN` | 突发不适判断的倒卧、无动作阈值 |
+| `HAS_CHILD` / `CHILD_HEIGHT_BAND` / `ADULT_NEAR` | 儿童危险判断，家里有孩子时设 `HAS_CHILD=1` |
+| `CLIP_PRE_SEC` / `CLIP_POST_SEC` | 事件视频存证保存的前后秒数 |
+| `PET_UNSEEN_HOURS` | 宠物模式下多久没看到宠物就提醒，0 为关闭 |
 
-初次调试建议保持默认的 `events/` 目录。当前 v2 的事件日志、快照和日报对目录配置的处理尚未完全统一。
+启动日志的 `abilities=[...]` 会列出实际启用的能力。用 `--no-audio`、`--no-clips` 可以单独关闭声音事件或视频存证。
+
+### 各模式启用的能力
+
+| 能力 | 无人值守 | 在家照护 | 宠物 | 夜间 |
+| --- | :---: | :---: | :---: | :---: |
+| 火焰 / 烟雾、报警器声 | ✓ | ✓ | ✓ | ✓ |
+| 入侵 + 云台跟踪 + 存证 | ✓ | | ✓ | |
+| 玻璃碎裂声 | ✓ | | ✓ | ✓ |
+| 跌倒、倒地久卧 | ✓ | ✓ | ✓ | ✓ |
+| 突发不适（多信号） | | ✓ | | ✓ |
+| 儿童危险 | ✓ | ✓ | ✓ | ✓ |
+| 卫生间久滞 | ✓ | ✓ | ✓ | ✓ |
+| 夜间离开卧室 | | | | ✓ |
+| 婴儿哭声 | ✓ | ✓ | ✓ | ✓ |
+| 宠物禁区 | ✓ | ✓ | ✓ | ✓ |
+| 宠物嘶叫、哀鸣 | ✓ | | ✓ | |
+| 宠物 / 家人活动记录与热力图 | ✓ | ✓ | ✓ | ✓ |
+
+儿童危险需 `HAS_CHILD=1`；声音类事件需要声音模型与 ffmpeg；火焰烟雾需要火焰模型。
 
 ### 标定区域
 
@@ -157,24 +204,33 @@ Copy-Item zones.example.json zones.json
 
 按实际画面像素坐标修改多边形，不要直接使用示例坐标：
 
-- `cat_zones`：宠物禁区。
-- `bathroom_zones`：需要统计停留时长的区域。
+- `cat_zones`：宠物禁区，进入即提醒。
+- `pet_zones`：猫爬架、食盆、猫砂盆等，只统计宠物停留，不提醒。
+- `danger_zones`：灶台、窗台、阳台、大门等儿童危险区。
+- `rest_zones`：床、沙发等，躺在这里不算异常倒卧。
+- `bathroom_zones`：停留过久提醒；在这里倒卧会加重突发不适判断。
 - `bedroom_zones`：用于夜间卧室外活动判断。
 
-规则使用目标框中心点判断是否进入区域。示例画面为 2960 × 1666；分辨率、机位或云台朝向改变后应重新校准。可选的 `--follow` 会移动摄像头，不能假定移动后的固定区域仍然有效。
+规则使用目标框中心点判断是否进入区域；儿童危险区同时看脚下位置。示例画面为 2960 × 1666；分辨率、机位或云台朝向改变后应重新校准。可选的 `--follow` 会移动摄像头，不能假定移动后的固定区域仍然有效。
 
 ### 查看事件与日报
 
-v2 默认将事件写入 `events/alerts.jsonl`，部分人形事件会生成本地快照。查看本地记录无需配置机器人；聊天指令接收与回复控制也需要额外集成。
+v2 默认将事件写入 `events/alerts.jsonl`。重要事件会保存快照 `snap_*.jpg`，跌倒、入侵、火情、突发不适、儿童危险还会保存事件前后的短视频 `events/clips/clip_*.mp4`，路径记录在事件的 `clip` 字段。查看本地记录无需配置机器人；聊天指令接收与回复控制需要额外集成。
 
 ```powershell
-# 汇总今天的 v2 事件日志
+# 汇总今天的事件与活动
 python report.py
+# 汇总指定日期
+python report.py 20261031
 ```
 
-日报保存为 `events/report_YYYYMMDD.md`。基础管线的日志格式不同，不会自动进入这个日报。
+日报包含：
 
-当前宠物活动网格写为 `heatmap_YYYYMMDD.npy`，日报读取 `heatmap_pet_YYYYMMDD.npy`，衔接尚未完成；网格坐标也固定按 2960 × 1666 映射。请暂将日报用于事件计数，不把热力图或“无通报”文字当作完整值守结论。
+- 事件分类计数与最近的重要事件（附录像路径）。
+- 宠物与家人的活动总结：出现次数、画面中时长、活跃时长、最活跃时段、各区域停留次数与时长、24 小时活跃度条。
+- 热力图 `events/report_heatmap_pet_YYYYMMDD.png`、`report_heatmap_person_YYYYMMDD.png`，叠加在当天自动保存的无人底图上。
+
+活动数据每 5 分钟落盘一次，程序重启会接着当天的数据继续累计。云台转动后热力图位置会错开，需要统计宠物活动时尽量固定机位。基础管线的日志格式不同，不会进入这个日报。
 
 ### 可选：飞书、微信与 QQ 机器人提醒
 
@@ -201,6 +257,9 @@ python report.py
 | ONVIF 地址能访问但流名不对 | `-camera` 显式指定 `living`；省略流名时上游可能默认寻找 `living_4k` |
 | 无法弹出预览窗口 | 默认安装的是 headless OpenCV，启动时使用 `--no-display` |
 | 跌倒或区域事件不准确 | 先检查检测框、遮挡与区域标定，再调 `FALL_CFG`；这些规则仍是原型 |
+| 火焰烟雾误报 | 阳光、红色物体、灯光都可能误检；提高 `FIRE_SCORE`，或避开窗户直射画面 |
+| 声音事件没反应 | `ffmpeg` 是否在 PATH；状态行的 `audio=` 分贝是否变化；go2rtc 流是否带音频 |
+| 儿童判定不准 | 先填 `CHILD_HEIGHT_BAND`，调 `CHILD_LEG_RATIO`；侧身、坐着时不参与判定 |
 
 <details>
 <summary>协议与登录排错备忘</summary>
