@@ -1,13 +1,16 @@
 <div align="center">
 
-# caregiving-eye
+# caregiving-eye · 米执事
 
-**把小米云台摄像头改装成家庭照护站：本地视频流 + AI 实时检测（跌倒 / 宠物拆家）+ ONVIF 标准云台控制。全程本地推理，画面不出内网。**
+**米执事（Mi Butler）——常驻家中的 AI 执事：一台小米云台摄像头，值守防火防盗，照护老人小孩，顺便记录猫的一天。本地推理，画面不出内网。**
+
+> 名字与说话方式见 [docs/butler.md](docs/butler.md)；个人开源项目，与小米公司无关。
 
 <p>
   <img src="https://img.shields.io/badge/python-3.9%2B-2563EB.svg" alt="Python 3.9+">
   <img src="https://img.shields.io/badge/inference-local-16A34A.svg" alt="Local inference">
   <img src="https://img.shields.io/badge/PTZ-ONVIF-7C3AED.svg" alt="ONVIF PTZ">
+  <img src="https://img.shields.io/badge/%E6%89%A7%E4%BA%8B-%E7%B1%B3%E6%89%A7%E4%BA%8B-F59E0B.svg" alt="Mi Butler">
   <img src="https://img.shields.io/badge/license-MIT-111827.svg" alt="License">
 </p>
 
@@ -80,6 +83,12 @@ scripts\start_stack.bat
 python care_pipeline.py --source rtsp://127.0.0.1:8554/living --no-display
 python onvif_ptz.py right 1.2   # 右转约15-20°后自动停止
 ```
+
+## 执事能力（值班制度）
+
+按"家里有没有人"自动切换值守重点——**无人值守**（入侵跟踪存证、火灾/烟雾视听双确认、玻璃碎异响）、
+**在家照护**（跌倒/久卧/滞留/儿童危险/突发疾病复合信号）、**宠物模式**（禁区拆家、活动热力图、日报）。
+完整身份设定、话术与施工分期见 **[docs/butler.md](docs/butler.md)**，算法选型见 **[docs/algorithms.md](docs/algorithms.md)**。
 
 ## 限制与边界（诚实版）
 
