@@ -20,3 +20,5 @@ events/
 models/
 go2rtc.yaml
 zones.json
+__pycache__/
+*.pyc
