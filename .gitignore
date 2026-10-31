@@ -1,0 +1,20 @@
+# caregivers' local secrets & artifacts — NEVER commit
+config.json
+mi_creds.json
+mi_devices.json
+mi_login_full.json
+mi_2fa_state.json
+notif_url.txt
+
+# runtime artifacts
+events/
+*.log
+*.jpg
+*.png
+*.etl
+*.pcapng
+
+# binaries & models (download separately, see README)
+*.exe
+*.zip
+models/
