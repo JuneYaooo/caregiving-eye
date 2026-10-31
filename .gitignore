@@ -19,3 +19,4 @@ events/
 *.zip
 models/
 go2rtc.yaml
+zones.json
