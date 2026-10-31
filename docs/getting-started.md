@@ -143,7 +143,7 @@ v2 接入 `Butler` 模式引擎、IoU 跟踪、姿态与区域规则。常见配
 | --- | --- |
 | `BUTLER_NAME` / `OWNER_TITLE` | 执事名字与对使用者的称呼 |
 | `MODE_SCHEDULE` | 值班日程，如 `23:00-07:00:night`；当前日程分支在未检出人时生效 |
-| `ALERT_WEBHOOK` | 钉钉 / 企业微信机器人地址；留空只记录本地 |
+| `ALERT_WEBHOOK` | 可选的兼容转发服务地址；未配置转发服务时留空 |
 | `ZONE_DWELL_MIN` | 区域久滞阈值，单位为分钟 |
 | `MODELS_DIR` | 模型目录，默认 `models` |
 
@@ -165,7 +165,7 @@ Copy-Item zones.example.json zones.json
 
 ### 查看事件与日报
 
-v2 默认将事件写入 `events/alerts.jsonl`，部分人形事件会生成本地快照。配置 Webhook 后推送事件文字，不上传图片；目前没有接收聊天回复的服务，`handle_command()` 只是供后续集成使用的 Python 入口。
+v2 默认将事件写入 `events/alerts.jsonl`，部分人形事件会生成本地快照。查看本地记录无需配置机器人；聊天指令接收与回复控制也需要额外集成。
 
 ```powershell
 # 汇总今天的 v2 事件日志
@@ -175,6 +175,19 @@ python report.py
 日报保存为 `events/report_YYYYMMDD.md`。基础管线的日志格式不同，不会自动进入这个日报。
 
 当前宠物活动网格写为 `heatmap_YYYYMMDD.npy`，日报读取 `heatmap_pet_YYYYMMDD.npy`，衔接尚未完成；网格坐标也固定按 2960 × 1666 映射。请暂将日报用于事件计数，不把热力图或“无通报”文字当作完整值守结论。
+
+### 可选：飞书、微信与 QQ 机器人提醒
+
+米执事可与 OpenClaw / Hermes 联合使用，由外部消息网关将事件发送到飞书、微信或 QQ。本项目不内置这些平台的机器人、账号登录或消息渠道配置。
+
+在所选网关中配置好消息渠道后，再自行配置事件转发，例如读取本地 `events/alerts.jsonl` 后交给网关处理。具体渠道支持、配置步骤和发送限制参考上游文档：
+
+| 工具 | 接入文档 |
+| --- | --- |
+| OpenClaw | [消息渠道](https://docs.openclaw.ai/channels) · [飞书](https://docs.openclaw.ai/channels/feishu) |
+| Hermes | [消息网关](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/) · [飞书](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/feishu) · [微信](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/weixin) · [QQ](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/qqbot) |
+
+如使用 `ALERT_WEBHOOK`，需提供能接收 `{"msgtype":"text","text":{"content":"事件文字"}}` 的转发服务，并由该服务适配网关要求的请求格式和鉴权。它不是这些平台机器人的直接配置入口，也不能直接替换成 OpenClaw / Hermes 的 Webhook 地址。
 
 ## 常见问题
 
