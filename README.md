@@ -42,7 +42,7 @@
 | 每日摘要 | 汇总当天记录的事件 | 暂不提供完整的宠物活动热力图 |
 | 云台控制 | 手动调整摄像头朝向；可尝试无人模式下自动跟踪 | 自动跟踪为实验功能，转动后需重新检查区域设置 |
 
-需要机器人提醒时，可与 **OpenClaw / Hermes** 联合使用。本项目不内置飞书、微信或 QQ 机器人，具体接入方式参考 [OpenClaw 消息渠道](https://docs.openclaw.ai/channels)与 [Hermes 消息网关](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/)。
+需要机器人提醒时，可与 **OpenClaw / Hermes / WorkBuddy / ZCode / Claude Code / Codex** 等 AI 工具联合使用，另行配置事件转发与消息渠道。本项目不内置飞书、微信或 QQ 机器人，接入方式可参考 [OpenClaw 消息渠道](https://docs.openclaw.ai/channels)与 [Hermes 消息网关](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/)。
 
 目前尚不支持火灾 / 烟雾、异常声音、儿童危险识别、视频片段存证与双向对话。
 
@@ -88,7 +88,7 @@ flowchart TD
     camera[小米云台摄像头] -->|局域网视频| vision
     vision --> butler[米执事 · 判断需要提醒的事件]
     butler --> local[本地事件记录与快照]
-    local -.->|可选 · 自行配置事件转发| gateway[OpenClaw / Hermes]
+    local -.->|可选 · 自行配置事件转发| gateway[外部 AI 工具与转发服务]
     gateway -.-> notifications[飞书 / 微信 / QQ 机器人提醒]
 
     style cloud fill:#F3EEE7,stroke:#BAA58D,color:#302923
