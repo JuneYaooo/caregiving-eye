@@ -1,118 +1,147 @@
 <div align="center">
 
-# caregiving-eye · 米执事
+<img src="./docs/assets/mi-butler.png" alt="米执事：穿着黑色燕尾服、戴着白手套的小米云台摄像头" width="100%">
 
-**米执事（Mi Butler）——常驻家中的 AI 执事：一台小米云台摄像头，值守防火防盗，照护老人小孩，顺便记录猫的一天。本地推理，画面不出内网。**
+# 米执事 · Mi Butler
 
-> 名字与说话方式见 [docs/butler.md](docs/butler.md)；个人开源项目，与小米公司无关。
+**让小米摄像头，成为常驻家中的 AI 执事。**
 
-<p>
-  <img src="https://img.shields.io/badge/python-3.9%2B-2563EB.svg" alt="Python 3.9+">
-  <img src="https://img.shields.io/badge/inference-local-16A34A.svg" alt="Local inference">
-  <img src="https://img.shields.io/badge/PTZ-ONVIF-7C3AED.svg" alt="ONVIF PTZ">
-  <img src="https://img.shields.io/badge/%E6%89%A7%E4%BA%8B-%E7%B1%B3%E6%89%A7%E4%BA%8B-F59E0B.svg" alt="Mi Butler">
-  <img src="https://img.shields.io/badge/license-MIT-111827.svg" alt="License">
-</p>
+本地看护 · 宠物观察 · 云台值守<br>
+画面留在家里，有事及时叫你。
+
+[![GitHub stars](https://img.shields.io/github/stars/JuneYaooo/caregiving-eye?style=flat&color=7A2837)](https://github.com/JuneYaooo/caregiving-eye/stargazers)
+[![Python](https://img.shields.io/badge/Python-3.9%2B-43566B)](./requirements.txt)
+[![Local inference](https://img.shields.io/badge/Inference-Local-567365)](#它是怎样工作的)
+[![License](https://img.shields.io/badge/License-MIT-343434)](./LICENSE)
+
+[能做什么](#现在能做什么) · [快速开始](#快速开始) · [实测记录](#实测记录) · [常见问题](./docs/getting-started.md#常见问题) · [路线图](#接下来做什么)
 
 </div>
 
-不刷固件、不改硬件：用社区补丁版 go2rtc 直连小米摄像头的局域网私有协议出 RTSP 流，YOLO 在本地跑人/猫检测与跌倒启发式，云台通过 xiaomi-onvif 桥暴露成标准 ONVIF 接口——任何 NVR / Home Assistant / Frigate 都能直接接，不锁死在本项目。
+---
 
-**已实测机型**：小米智能摄像机3 云台版（`chuangmi.camera.069a01`，固件 5.3.1）。同协议（miss/cs2）的小米云台机理论上适用，命令细节可能因型号而异。
+**米执事（`caregiving-eye`）是一套本地运行的家庭视觉照护原型。** 把小米云台摄像头接入电脑，用 YOLO 分析画面，再通过事件记录、文字通知和 ONVIF 云台控制，把“远程看一眼”变成持续的观察与提醒。
+
+不刷固件、不改硬件。视频通过局域网传输，推理在本机完成；登录和连接时换取流密钥仍需访问米家云端。项目处于原型阶段，适合愿意按机位调试的开发者与智能家居爱好者。
+
+## 现在能做什么
+
+| 家庭看护 | 宠物观察 | 无人值守 |
+| :--- | :--- | :--- |
+| 识别人形，尝试发现跌倒、久卧和区域久滞 | 识别猫狗，对进入指定区域的行为发出提醒 | 在无人模式下记录人形事件，配合云台观察 |
+| 姿态状态机与定时规则已有原型，需现场校准 | 禁区规则已有实现，活动热力图仍在完善 | 手动云台已实测，自动跟踪仍需联调 |
+
+### 已跑通的基础链路
+
+- **小米摄像头 → RTSP**：通过社区补丁版 go2rtc 获取局域网视频流。
+- **RTSP → 本地识别**：ONNX Runtime 在本机运行 YOLO，已有实时画面检测记录。
+- **ONVIF → 云台转动**：通过 xiaomi-onvif 桥发送标准云台命令。
+
+### 已入库的执事原型
+
+| 模块 | 当前实现 | 使用状态 |
+| --- | --- | --- |
+| 值班模式 | `HOME` 在家、`AWAY` 无人、`PET` 宠物、`NIGHT` 夜间；有人/无人判定、日程和指令入口 | 模式引擎已实现，复杂切换场景待验证 |
+| 照护规则 | IoU 目标跟踪、姿态状态机、久卧、区域久滞、夜间活动与无人计时 | 需按画面标定区域并验证阈值 |
+| 通报与记录 | 本地事件日志；可选钉钉 / 企业微信机器人文字推送；部分事件保存快照 | Webhook 为单向推送，聊天回复尚未接入 |
+| 活动与日报 | 活动网格采样、事件摘要、热力图渲染代码 | 日报可汇总日志；宠物热力图读写衔接待完善 |
+| 自动跟踪 | `care_v2.py --follow` 中的无人模式水平云台修正 | 实验功能，需现场联调 |
+
+火灾 / 烟雾、异常声音、儿童危险识别、视频片段存证与双向对话仍在规划中。身份设定见 [执事设计](./docs/butler.md)，技术方向见 [算法设计](./docs/algorithms.md)；两份文档包含规划内容，当前状态以本页和代码为准。
+
+## 快速开始
+
+**已实测设备**：小米智能摄像机 3 云台版 · `chuangmi.camera.069a01` · 固件 `5.3.1`。同协议机型需要另行验证，不能视为全系列兼容。
+
+完整接入流程按 **Windows x64 + Python 3.9+** 编写。Python 推理代码也可在其他平台尝试，但摄像头接入与云台链路尚无跨平台实测记录。
+
+| 步骤 | 做什么 | 入口 |
+| --- | --- | --- |
+| 01 · 准备环境 | 克隆仓库，安装依赖，配置 `.env` | [环境与配置](./docs/getting-started.md#1-准备环境) |
+| 02 · 接入摄像头 | 下载配套补丁版二进制，登录米家，填写 `go2rtc.yaml` | [视频与云台](./docs/getting-started.md#2-接入摄像头) |
+| 03 · 开始观察 | 运行检测管线，标定区域，按需开启通知 | [检测与提醒](./docs/getting-started.md#3-运行检测与提醒) |
+
+如果已经准备好了依赖、模型和 RTSP 视频流，在仓库根目录运行：
+
+```powershell
+# 基础检测管线：先确认视频与模型正常
+python care_pipeline.py --source rtsp://127.0.0.1:8554/living --no-display
+```
+
+体验值班模式、跟踪和日报时，先停止上面的管线，再启动 v2 原型：
+
+```powershell
+python care_v2.py --source rtsp://127.0.0.1:8554/living --no-display
+```
+
+保持管线拉流，在另一个终端控制云台：
+
+```powershell
+python onvif_ptz.py right 1.2
+python onvif_ptz.py stop
+```
+
+> 跌倒与异常行为判断仍是实验性规则，可能误报或漏报，不能替代专业监护设备。请先用自己的机位和测试片段验证。
+
+## 它是怎样工作的
+
+```mermaid
+flowchart TD
+    cloud[米家云端 · 登录与流密钥] -.-> stream[go2rtc 补丁版]
+    camera[小米云台摄像头] -->|局域网视频| stream
+    stream -->|RTSP| vision[本地视觉 · YOLO / ONNX Runtime]
+    vision --> butler[米执事 · 模式与事件规则]
+    butler --> local[本地事件日志与快照]
+    butler -.->|可选文字推送| webhook[钉钉 / 企业微信]
+    client[云台命令 / 实验性跟踪] -->|ONVIF| bridge[xiaomi-onvif 桥]
+    bridge --> stream
+    stream -->|云台控制| camera
+
+    style cloud fill:#F3EEE7,stroke:#BAA58D,color:#302923
+    style camera fill:#F3EEE7,stroke:#BAA58D,color:#302923
+    style butler fill:#742A38,stroke:#742A38,color:#FFFFFF
+    style local fill:#EAF0EB,stroke:#819888,color:#23352B
+```
+
+摄像头连接由 go2rtc 持有，视觉分析与云台控制复用这条链路。暴露出的 RTSP / ONVIF 接口可供 NVR、Home Assistant、Frigate 等系统集成，具体兼容性以各自配置与实测为准。
 
 ## 实测记录
 
-| 能力 | 结果 | 验证方式 |
+以下来自项目已有的单设备测试记录，不能代表检测准确率或所有网络环境下的性能。
+
+| 项目 | 已记录结果 | 观察方式 |
 | --- | --- | --- |
-| 视频流 | H265 2960×1666 实时出流 | OpenCV 解码 + 画面时间水印 |
-| AI 检测 | 35 秒分析 333 帧，person 置信度 0.88，沙发/餐桌/椅子全识别 | 实时流实测 |
-| 云台控制 | ONVIF ContinuousMove 右转约 15–20° | 命令前后帧对比（差异度 35.5，基线噪声 <1.5） |
+| 视频流 | H.265 · 2960 × 1666 实时出流 | OpenCV 解码与画面时间水印 |
+| 本地检测 | 35 秒分析 333 帧；一次 `person` 检出置信度 0.88 | 实时流检测输出 |
+| 手动云台 | `ContinuousMove` 右转约 15–20° | 指令前后画面对比 |
 
-## 架构
+## 接下来做什么
 
-```
-米家账号(云端取凭据) ──► go2rtc 补丁版 (xiaomi:// 私有协议直连)
-                              │
-                              ▼
-                    RTSP rtsp://127.0.0.1:8554/living (H265)
-                              │
-              ┌───────────────┼────────────────┐
-              ▼               ▼                ▼
-        care_pipeline    xiaomi-onvif 桥    本地查看/录像
-        YOLO 人/猫检测    ONVIF :8891
-        跌倒启发式        ► 标准云台接口
-        猫禁区报警
-```
+- **把规则跑稳**：更多机位下的姿态、模式切换与定时器验证，完善宠物热力图和日报。
+- **补齐值守闭环**：自动跟踪联调、事件视频片段、可接收回复的消息入口。
+- **加入声音**：哭声、呼救、玻璃碎声与烟警器提示音的本地识别。
+- **融合更多信号**：火灾 / 烟雾、儿童危险区域与时序骨架分析。
 
-## 如何安装与使用
+欢迎通过 [Issues](https://github.com/JuneYaooo/caregiving-eye/issues) 分享机型兼容性、脱敏日志与复现步骤，或通过 [Pull Requests](https://github.com/JuneYaooo/caregiving-eye/pulls) 改进实现。
 
-**0. 前置下载**（二进制不入库，见 [SincereXIA/xiaomi-onvif releases](https://github.com/SincereXIA/xiaomi-onvif/releases)）
+## 使用边界与隐私
 
-| 文件 | 说明 |
+- **需要联网取密钥**：每次连接摄像头需要向米家云端换取流密钥，目前不是完全离线方案。
+- **通知按需开启**：默认记录在本地；配置 `ALERT_WEBHOOK` 后会将事件文字发送到对应平台。v2 不上传快照图片。
+- **只在可信网络使用**：不要把 RTSP、go2rtc 或 ONVIF 控制端口直接暴露到公网。
+- **保护家庭数据**：账号、凭据、设备清单、家庭画面和区域配置应留在本地；仅在自己家中或已获明确同意的场合使用。
+- **先校准，再使用**：遮挡、光线、拍摄角度与云台转动都会影响规则判断；固定画面区域在转动后需要重新标定。
+
+## 项目导航
+
+| 想了解什么 | 从这里开始 |
 | --- | --- |
-| `go2rtc.exe` | ⚠️ 必须用该仓库的 **go2rtc-windows-amd64.exe（补丁版）**，官方原版没有小米 PTZ 端点（404） |
-| `xiaomi-onvif.exe` | ONVIF 桥 |
-| `models/yolov8n.onnx` `models/yolov8n-pose.onnx` | [ultralytics assets v8.4.0](https://github.com/ultralytics/assets/releases/tag/v8.4.0) |
+| 安装、模型、配置与排错 | [接入指南](./docs/getting-started.md) |
+| 值班制度与角色设计 | [执事设计](./docs/butler.md) |
+| 算法路线与后续能力 | [算法设计](./docs/algorithms.md) |
+| 感知管线 | [基础管线](./care_pipeline.py) · [v2 原型](./care_v2.py) |
+| 模式、通知与日报 | [butler.py](./butler.py) · [report.py](./report.py) |
 
-**1. 配置私密信息**
+感谢 [go2rtc](https://github.com/AlexxIT/go2rtc)、[xiaomi-onvif](https://github.com/SincereXIA/xiaomi-onvif)、[Ultralytics](https://github.com/ultralytics/ultralytics) 与 [ONNX Runtime](https://github.com/microsoft/onnxruntime) 提供基础能力。
 
-```bash
-cp .env.example .env    # 填入米家账号、摄像头 IP/DID、网段；.env 已 gitignore
-pip install -r requirements.txt
-```
-
-**2. 防火墙（管理员，一次）**
-
-```powershell
-powershell -File scripts/install_firewall.ps1
-```
-
-摄像头的 CS2 握手回包来自动态端口，Windows 防火墙默认丢弃，这是最容易卡住新手的一步。
-
-**3. 米家登录（生成凭据）**
-
-```bash
-python mi_login.py          # 首次可能触发短信验证码，交互输入
-python pull_mi_devices.py   # 生成 mi_devices.json，核对摄像头 did
-```
-
-**4. 启动 + AI + 云台**
-
-```bash
-scripts\start_stack.bat
-python care_pipeline.py --source rtsp://127.0.0.1:8554/living --no-display
-python onvif_ptz.py right 1.2   # 右转约15-20°后自动停止
-```
-
-## 执事能力（值班制度）
-
-按"家里有没有人"自动切换值守重点——**无人值守**（入侵跟踪存证、火灾/烟雾视听双确认、玻璃碎异响）、
-**在家照护**（跌倒/久卧/滞留/儿童危险/突发疾病复合信号）、**宠物模式**（禁区拆家、活动热力图、日报）。
-完整身份设定、话术与施工分期见 **[docs/butler.md](docs/butler.md)**，算法选型见 **[docs/algorithms.md](docs/algorithms.md)**。
-
-## 限制与边界（诚实版）
-
-- **跌倒检测是启发式**（宽高比骤变 + 中心骤降 + 倒地静止计时），阈值需要按你的机位实测校准（`care_pipeline.py` 的 `FALL_CFG`）。它**不能替代专业监护设备**，漏报误报都可能有。
-- 云台命令必须在视频流活跃时发（有 RTSP 消费者拉流中），否则报 "no active connection"。照护管线常驻拉流，天然满足。
-- 每次连接摄像头需联网一次换流密钥（`miss_get_vendor`），流本身走局域网——完全断网的纯局域网方案需要进一步逆向固件，本项目不做。
-- 单会话验证有限：目前只在一台路由器、一个机型上跑通，其他拓扑（尤其摄像头回包经网关的场景）欢迎反馈 issue。
-
-## 踩坑备忘（省你一天）
-
-1. go2rtc 必须 ≥1.9.13 才有 `xiaomi:` 源；**要 PTZ 必须用 xiaomi-onvif 补丁版**（原版 v1.9.15 的 PTZ API 返回 404）。
-2. go2rtc 配置 `xiaomi:` 的 key 是 **passToken（`V1:` 开头）**，填 serviceToken 会 401。
-3. 小米云 API 的 RC4 是 **drop1024 变体**（丢弃前 1024 字节密钥流），标准 RC4 实现必失败；`mi_api.py` 内置纯 Python 版，不依赖 pycryptodome。
-4. 云端 API 是国内域，requests 客户端 `trust_env=False`，否则被系统代理劫持。
-5. 二次验证的 verify 请求参数必须放 **query string**，放 form body 会卡进"确认安全手机"JS 死循环。
-6. HEVC 中途入流先花屏，等关键帧（预热读流约 12 秒）再分析。
-7. 电机命令 `{"operation":N}`（1左2右3上4下5归位）每次一小步；自研 miss 客户端 auth 在部分固件上被静默无视——本项目直接用 ONVIF 桥，不与固件斗智。
-8. 报警默认只写本地 `events/`；在 `.env` 配 `ALERT_WEBHOOK` 后推送到钉钉/企微机器人（文字+本地快照路径，视频不出内网）。
-
-## 隐私与合规
-
-- 推理全部本地执行；仓库永不包含账号、token、设备 ID、内网 IP、画面（见 `.gitignore`）。
-- 请仅用于自己家中或已获明确同意的场合；看护对象（尤其老人）应知情。
-
-## License
-
-[MIT](LICENSE)
+项目代码采用 [MIT License](./LICENSE)，模型权重遵循各自上游许可证。个人开源项目，与小米公司无隶属关系。
