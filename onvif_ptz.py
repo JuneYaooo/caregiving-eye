@@ -5,10 +5,9 @@
 """
 import sys, time, re, os
 import requests
-from common_config import load_config
+from common_config import cfg
 
-_CFG = load_config()
-BASE = _CFG['go2rtc']['onvif_base']
+BASE = cfg('ONVIF_BASE', 'http://127.0.0.1:8891')
 
 
 def soap(service, body, action):

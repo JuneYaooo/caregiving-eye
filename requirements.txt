@@ -4,3 +4,4 @@ numpy
 requests
 PyNaCl
 cryptography
+python-dotenv

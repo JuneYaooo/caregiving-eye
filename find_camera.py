@@ -4,7 +4,7 @@
 """
 import subprocess, socket, time, re
 import concurrent.futures as cf
-from common_config import load_config
+from common_config import subnets
 
 XIAOMI_OUIS = {
     '28:6C:07','34:80:B3','34:CE:00','64:09:80','74:23:44','78:02:F8','78:11:DC',
@@ -60,7 +60,7 @@ def parse_arp():
 
 
 def main():
-    subnets = load_config()['network']['subnets']
+    subnets = subnets()
     for sn in subnets:
         print('[sweep] %s.0/24 ...' % sn)
         alive = sweep(sn)

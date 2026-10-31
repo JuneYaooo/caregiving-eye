@@ -7,6 +7,11 @@
   python care_pipeline.py --source test.mp4 --zones zones.json --webhook http://...
 """
 import argparse, json, os, time
+try:
+    from common_config import cfg
+except ImportError:
+    def cfg(k, d=''):
+        return d
 import numpy as np
 import cv2
 import onnxruntime as ort
@@ -127,7 +132,7 @@ def main():
     ap.add_argument('--det', default='models/yolov8n.onnx')
     ap.add_argument('--pose', default='models/yolov8n-pose.onnx')
     ap.add_argument('--zones', default='zones.json')
-    ap.add_argument('--webhook', default='')
+    ap.add_argument('--webhook', default=cfg('ALERT_WEBHOOK'))
     ap.add_argument('--no-display', action='store_true')
     ap.add_argument('--test-image', default='')
     ap.add_argument('--fps', type=float, default=3.0, help='分析帧率')

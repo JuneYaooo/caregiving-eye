@@ -1,12 +1,12 @@
-# caregivers' local secrets & artifacts — NEVER commit
-config.json
+# ===== 本地私密配置与凭据 (永不提交) =====
+.env
 mi_creds.json
 mi_devices.json
 mi_login_full.json
 mi_2fa_state.json
 notif_url.txt
 
-# runtime artifacts
+# ===== 运行产物 =====
 events/
 *.log
 *.jpg
@@ -14,7 +14,8 @@ events/
 *.etl
 *.pcapng
 
-# binaries & models (download separately, see README)
+# ===== 二进制与模型 (按 README 单独下载) =====
 *.exe
 *.zip
 models/
+go2rtc.yaml
