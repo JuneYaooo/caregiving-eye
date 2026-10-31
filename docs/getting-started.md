@@ -81,10 +81,10 @@ xiaomi:
 
 streams:
   living:
-    - "xiaomi://YOUR_USER_ID:cn@YOUR_CAMERA_IP?did=YOUR_DEVICE_ID&model=chuangmi.camera.069a01&subtype=2"
+    - "xiaomi://YOUR_USER_ID:cn@YOUR_CAMERA_IP?did=YOUR_DEVICE_ID&model=YOUR_CAMERA_MODEL&subtype=2"
 ```
 
-`YOUR_USER_ID` 与 `YOUR_PASS_TOKEN` 来自 `mi_creds.json`；后者是 `passToken`，不是 `serviceToken`。`YOUR_CAMERA_IP`、`YOUR_DEVICE_ID` 和 `model` 按设备清单填写，`cn` 表示国内区。配置结构参考 [上游示例](https://github.com/SincereXIA/xiaomi-onvif/blob/main/examples/xiaomi-onvif/go2rtc.yaml)。
+`YOUR_USER_ID` 与 `YOUR_PASS_TOKEN` 来自 `mi_creds.json`；后者是 `passToken`，不是 `serviceToken`。`YOUR_CAMERA_IP`、`YOUR_DEVICE_ID` 和 `YOUR_CAMERA_MODEL` 按设备清单填写，`cn` 表示国内区。配置结构参考 [上游示例](https://github.com/SincereXIA/xiaomi-onvif/blob/main/examples/xiaomi-onvif/go2rtc.yaml)。
 
 `.env` 不会自动生成或同步 `go2rtc.yaml`，更换设备或凭据时要同步检查两处。此配置仅监听本机；接入其他机器上的 NVR 前需另行配置可信网络访问。
 
