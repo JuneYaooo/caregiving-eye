@@ -1,22 +1,31 @@
 # -*- coding: utf-8 -*-
-"""米执事感知核心 v2：按值班模式组合各项能力
+"""米执事主程序：大脑 + 值班表
 
-  所有模式   火焰 / 烟雾（视觉 + 烟雾报警器声音）、玻璃碎裂声、事件视频存证
-  无人值守   入侵检测、云台跟踪（--follow）、长时间无人
-  在家照护   跌倒、倒地久卧、突发不适（多信号）、儿童危险、卫生间久滞、夜间离床
-  宠物       禁区提醒、活动记录、热力图、宠物嘶叫、久未出现
+结构（详见 docs/brain.md）：
+  常驻服务   拉流线程（只留最新帧）、声音线程（安静时不跑模型）
+  警觉等级   idle / watch / alert，决定检测频率，没人没动静时自动降速省电
+  值班表     main() 里“值班表”一段，每一行就是一项任务：多久跑一次、什么模式跑、什么条件跑、
+             谁优先；模型推理串行，写文件 / 发消息 / 转云台走 io 线程并行
+  研判层     各能力只上报信号，由 IncidentManager 合并、升级、催办、结案、学习误报
+  保养       磁盘清理、日志轮转、心跳 status.json、断流看门狗、每日日报
 
-可选能力缺模型或依赖时自动跳过，启动日志会列出实际启用了哪些。
 用法:
-  python care_v2.py --source rtsp://127.0.0.1:8554/living --no-display
-zones.json 见 zones.example.json
+  python care_v2.py --source rtsp://127.0.0.1:8554/living
+  python care_v2.py --source rtsp://... --follow          # 无人时云台跟踪
+可选能力缺模型或依赖时自动跳过，启动日志会列出实际启用了哪些。
 """
 import argparse, json, os, time
 import numpy as np
 import cv2
 from common_config import cfg
 from simple_tracker import SimpleTracker
-from butler import Butler, AWAY, HOME, PET, NIGHT
+from butler import Butler, AWAY, HOME, PET, NIGHT, MODE_CN
+from brain.runtime import Scheduler, Task
+from brain.frames import FrameSource
+from brain.gate import MotionGate, AlertLevel, IDLE, WATCH, ALERT
+from brain.incidents import IncidentManager, RANK
+from brain.ptz import PtzController
+from brain import upkeep
 from abilities.clips import ClipRecorder
 from abilities.fire import FireSmokeDetector
 from abilities.audio import AudioListener
@@ -36,6 +45,12 @@ FALL_CFG = {
 CAT_CFG = {'min_score': 0.45, 'cooldown': 120}
 ABSENCE_MIN = float(cfg('ABSENCE_MIN', 480))       # 长时间无人出现提醒(分钟)
 ZONE_DWELL_MIN = float(cfg('ZONE_DWELL_MIN', 20))  # 卫生间久滞(分钟)
+
+# 各警觉等级下的检测间隔（秒）
+DETECT_EVERY = {IDLE: float(cfg('DETECT_IDLE_SEC', 1.5)),
+                WATCH: 1 / float(cfg('DETECT_FPS', 3)),
+                ALERT: 1 / float(cfg('DETECT_ALERT_FPS', 5))}
+FIRE_EVERY = {IDLE: 5.0, WATCH: 3.0, ALERT: 2.0}
 
 
 def in_poly(pt, poly):
@@ -82,6 +97,8 @@ class PostureSM:
         st = self.sm.setdefault(tid, {'state': 'unknown', 'cand': None, 'cand_n': 0,
                                       'last_stand_ts': now, 'lying_since': None,
                                       'last_lying_alert': 0, 'fall_alerted': False})
+        if st['state'] == 'stand':
+            st['last_stand_ts'] = now   # 持续站立时也要刷新，否则站久了的人跌倒永远判不出来
         angle, tlen, aspect = self._geom(kpts, bbox)
         new = self._state_of(angle, aspect)
         if new == st['state'] or new == 'unknown':
@@ -124,12 +141,27 @@ def load_zones(path):
     return {k: z.get(k, []) for k in ZONE_KEYS}
 
 
-AUDIO_TEXT = {
-    'smoke_alarm': ('CRITICAL', 'fire_alarm_sound', '听到烟雾 / 火警报警器的声音！'),
-    'glass': ('GUARD', 'glass_break', '听到玻璃碎裂或撞击声。'),
-    'baby_cry': ('GUARD', 'baby_cry', '听到婴儿哭声。'),
-    'pet_distress': ('PET', 'pet_distress', '听到宠物嘶叫或哀鸣。'),
-}
+class Ctx:
+    """一次运行里各任务共享的状态（只在主循环线程里修改）"""
+
+    def __init__(self, zones):
+        self.zones = zones
+        self.mode, self.level = HOME, IDLE
+        self.frame, self.frame_ts, self.frame_seq, self.motion_seq = None, 0.0, -1, -1
+        self.W, self.H = 1, 1
+        self.det_seq = 0
+        self.tracks, self.persons, self.pets = [], [], []
+        self.kpts, self.posture = {}, {}
+        self.fall_ts = {}
+        self.zone_enter = {}
+        self.last_person_ts = time.time()
+        self.zones_valid = True
+        self.started = time.time()
+
+
+def cell_of(pt, W, H):
+    """把画面分成 6×4 格，误报学习按格子记"""
+    return 'c%d_%d' % (min(int(pt[0] / W * 6), 5), min(int(pt[1] / H * 4), 3))
 
 
 def main():
@@ -140,31 +172,37 @@ def main():
     ap.add_argument('--zones', default='zones.json')
     ap.add_argument('--events-dir', '--heatmap-dir', dest='events_dir',
                     default=cfg('EVENTS_DIR', 'events'))
-    ap.add_argument('--no-display', action='store_true')
     ap.add_argument('--follow', action='store_true', help='无人值守时云台跟踪入侵者')
     ap.add_argument('--no-audio', action='store_true', help='关闭声音事件')
     ap.add_argument('--no-clips', action='store_true', help='关闭视频存证')
-    ap.add_argument('--fps', type=float, default=3.0)
+    ap.add_argument('--no-display', action='store_true', help='保留兼容，执事本身不开窗口')
     ap.add_argument('--test-image', default='')
     args = ap.parse_args()
 
     from care_pipeline import YoloOnnx
     det_model = YoloOnnx(args.det)
-    pose_model = YoloOnnx(args.pose) if os.path.exists(args.pose) else None
     if args.test_image:
-        img = cv2.imread(args.test_image)
-        for d in det_model(img):
+        for d in det_model(cv2.imread(args.test_image)):
             print('det', CLASS_NAMES.get(d['cls'], d['cls']), round(d['score'], 2))
         return
+    pose_model = YoloOnnx(args.pose) if os.path.exists(args.pose) else None
 
     ev_dir = args.events_dir
     os.makedirs(ev_dir, exist_ok=True)
-    butler = Butler(events_path=os.path.join(ev_dir, 'alerts.jsonl'))
-    tracker = make_tracker(cfg('TRACKER', 'iou'), fps=args.fps)
-    psm = PostureSM()
     zones = load_zones(args.zones)
+    ctx = Ctx(zones)
 
-    # ---- 可选能力 ----
+    # ---------- 组件 ----------
+    butler = Butler(events_path=os.path.join(ev_dir, 'alerts.jsonl'))
+    incidents = IncidentManager(butler, ev_dir,
+                                remind_sec=float(cfg('REMIND_SEC', 180)),
+                                max_reminds=int(cfg('MAX_REMINDS', 5)))
+    butler.incidents = incidents
+    sched = Scheduler(io_workers=2, budget=float(cfg('TICK_BUDGET', 0.6)))
+    tracker = make_tracker(cfg('TRACKER', 'iou'), fps=3, max_misses=DETECT_EVERY[IDLE] * 3)
+    psm = PostureSM()
+    gate, level = MotionGate(), AlertLevel(hold=float(cfg('CALM_DOWN_SEC', 30)))
+    ptz = PtzController(enabled=args.follow)
     fire = FireSmokeDetector.from_env(cfg)
     child = ChildSafety.from_env(cfg)
     illness = IllnessMonitor.from_env(cfg)
@@ -175,248 +213,332 @@ def main():
         os.path.join(ev_dir, 'clips'), pre_sec=float(cfg('CLIP_PRE_SEC', 10)),
         post_sec=float(cfg('CLIP_POST_SEC', 15)))
 
-    def on_audio(group, score, top):
-        if group in AUDIO_TEXT:
-            level, et, text = AUDIO_TEXT[group]
-            if group == 'glass' and butler.mode not in (AWAY, PET, NIGHT):
-                return
-            if group == 'pet_distress' and butler.mode not in (PET, AWAY):
-                return
-            clip = clips.trigger(et) if clips else None
-            butler.notify(level, '%s（置信度 %.2f）' % (text, score), event_type=et, clip=clip)
+    # ---------- 常驻服务 ----------
+    svc = {'frames': None, 'audio': None, 'stream_down': False, 'disk': {}}
 
-    audio = None if args.no_audio else AudioListener.from_env(cfg, on_event=on_audio)
-    if audio:
-        audio.start()
-    pet_unseen_h = float(cfg('PET_UNSEEN_HOURS', 0))
-    abilities = ['检测', '姿态' if pose_model else '姿态(未加载)',
-                 '火焰烟雾' if fire else '火焰烟雾(无模型)',
-                 '声音' if audio else '声音(未启用)',
-                 '儿童' if child else '儿童(HAS_CHILD=0)',
-                 '存证' if clips else '存证(关)', type(tracker).__name__]
+    def start_frames():
+        f = FrameSource(args.source, retrieve_fps=5.0,
+                        on_frame=(lambda fr, ts: clips.push(fr, ts)) if clips else None)
+        f.start()
+        svc['frames'] = f
 
-    cap = cv2.VideoCapture(args.source)
-    if not cap.isOpened():
-        print('ERROR: cannot open source', args.source)
-        return
-    n_warm, t0 = 0, time.time()
-    while n_warm < 40 and time.time() - t0 < 20:   # 等关键帧
-        ok, _ = cap.read()
-        if ok:
-            n_warm += 1
-    print('[care_v2] warm=%d frames, zones=%s, abilities=%s'
-          % (n_warm, [k for k, v in zones.items() if v], abilities))
-    butler.notify('INFO', '%s上线，当前模式：%s。有事我叫你。' % (butler.name, butler.mode),
+    def start_audio():
+        if args.no_audio:
+            return
+        a = AudioListener.from_env(cfg)
+        if a:
+            a.start()
+        svc['audio'] = a
+
+    start_frames()
+    start_audio()
+
+    # ---------- 工具 ----------
+    def evidence_from(frame):
+        """返回 evidence(tag, level)：快照在 io 线程写；值守级以上才录像"""
+        def ev(tag, lvl):
+            if frame is None:
+                return None, None
+            path = os.path.join(ev_dir, 'snap_%s_%s.jpg' % (tag, time.strftime('%Y%m%d_%H%M%S')))
+            img = frame.copy()
+            sched.once('snap', lambda: cv2.imwrite(path, img), lane='io')
+            clip = clips.trigger(tag) if clips and RANK[lvl] >= RANK['GUARD'] else None
+            return path, clip
+        return ev
+
+    def signal(etype, lvl, text, subject=None, pt=None):
+        cell = cell_of(pt, ctx.W, ctx.H) if pt else None
+        return incidents.signal(etype, lvl, text, subject=subject, cell=cell,
+                                evidence=evidence_from(ctx.frame))
+
+    # ================= 值班表 =================
+    # 优先级：0 看门 / 1 看见 / 2 生命财产 / 3 照护研判 / 4 区域规则 / 6+ 统计（过载时可让路）
+
+    def t_watchdog(c):
+        f = svc['frames']
+        stale = f.stale_for() if f else float('inf')
+        if f is None or not f.is_alive():
+            start_frames()
+        down_sec = float(cfg('STREAM_DOWN_SEC', 120))
+        if stale > down_sec and time.time() - c.started > down_sec and not svc['stream_down']:
+            svc['stream_down'] = True
+            signal('stream_down', 'GUARD', '画面已中断 %d 秒，正在自动重连（已重连 %d 次）。'
+                   % (min(stale, 9e5), f.reconnects if f else 0))
+        elif stale < 10 and svc['stream_down']:
+            svc['stream_down'] = False
+            butler.notify('INFO', '画面已恢复。', event_type='stream_up', cooldown=0)
+        a = svc['audio']
+        if a is not None and not a.is_alive() and not args.no_audio:
+            start_audio()
+
+    def t_motion(c):
+        frame, ts, seq = svc['frames'].latest()
+        if frame is None or seq == c.motion_seq:
+            return
+        c.motion_seq = seq
+        gate.update(frame, ts)
+        now = time.time()
+        c.level = level.update(now, now - gate.last_motion < 10, bool(c.persons),
+                               incidents.highest_open() >= RANK['GUARD'])
+        c.zones_valid = ptz.zones_valid
+
+    def t_detect(c):
+        frame, ts, seq = svc['frames'].latest()
+        if frame is None or seq == c.frame_seq:
+            return
+        c.frame, c.frame_ts, c.frame_seq = frame, ts, seq
+        c.H, c.W = frame.shape[:2]
+        dets = [d for d in det_model(frame)
+                if (d['cls'] == PERSON and d['score'] > FALL_CFG['min_score'])
+                or (d['cls'] in (CAT, DOG) and d['score'] > CAT_CFG['min_score'])]
+        c.tracks = tracker.update(dets, ts)
+        c.persons = [t for t in c.tracks if t.cls == PERSON]
+        c.pets = [t for t in c.tracks if t.cls in (CAT, DOG)]
+        c.mode = butler.update_presence(bool(c.persons),
+                                        only_pets=bool(c.pets) and not c.persons)
+        if c.persons:
+            c.last_person_ts = ts
+        c.det_seq += 1
+
+    def t_pose(c):
+        pose_dets = pose_model(c.frame, 0.3) if pose_model else []
+        c.kpts, c.posture = {}, {}
+        for t in c.persons:
+            best, bi = None, 0.2
+            for p in pose_dets:
+                i = SimpleTracker._iou(t.bbox, p['bbox'])
+                if i > bi:
+                    best, bi = p, i
+            k = best.get('kpts') if best else None
+            evt = psm.update(t.tid, k, t.bbox, c.frame_ts)
+            c.kpts[t.tid], c.posture[t.tid] = k, psm.sm[t.tid]['state']
+            if evt == 'fall':
+                c.fall_ts[t.tid] = time.time()
+                signal('fall', 'CRITICAL', '判断有人跌倒（#%d），已抓拍并录像。' % t.tid,
+                       subject=t.tid, pt=t.center())
+            elif evt == 'lying_long':
+                signal('lying_long', 'CRITICAL', '有人倒地超过 %g 秒未起身（#%d），请查看。'
+                       % (FALL_CFG['lying_min_secs'], t.tid), subject=t.tid, pt=t.center())
+        for tid in list(psm.sm):
+            if tid not in tracker.tracks:
+                psm.sm.pop(tid)
+
+    def t_fire(c):
+        frame, ts, _ = svc['frames'].latest()
+        if frame is None:
+            return
+        r = fire.update(frame, ts)
+        if not r:
+            return
+        what = '、'.join(sorted({'fire': '明火', 'smoke': '烟雾'}.get(l, l) for l in r['labels']))
+        a = svc['audio']
+        heard = bool(a and a.heard('smoke_alarm', within=60))
+        if r['level'] == 'confirmed' or heard:
+            signal('fire', 'CRITICAL', '画面中持续出现%s%s，请立即确认！'
+                   % (what, '，同时听到报警器声' if heard else ''))
+        else:
+            signal('fire_suspect', 'GUARD', '疑似出现%s（置信度 %.2f），正在加密观察。' % (what, r['score']))
+
+    def t_audio(c):
+        a = svc['audio']
+        n = 0
+        while a and not a.events.empty() and n < 50:
+            ts, g, score, top = a.events.get_nowait()
+            n += 1
+            if g == 'smoke_alarm':
+                signal('fire_alarm_sound', 'CRITICAL', '听到烟雾 / 火警报警器的声音（%.2f）！' % score)
+            elif g == 'glass' and c.mode in (AWAY, PET, NIGHT):
+                signal('glass_break', 'GUARD', '听到玻璃碎裂或撞击声（%.2f）。' % score)
+            elif g == 'baby_cry':
+                signal('baby_cry', 'GUARD', '听到婴儿哭声。')
+            elif g == 'pet_distress' and c.mode in (PET, AWAY):
+                signal('pet_distress', 'PET', '听到宠物嘶叫或哀鸣。')
+            # distress（呼喊呻吟）不单独提醒，作为突发不适的佐证信号
+
+    def t_intrusion(c):
+        for t in c.persons:
+            if t.hits < 8:
+                continue
+            signal('intrusion', 'GUARD', '家中无人，但检测到移动的人形（#%d），已抓拍并录像。'
+                   '若是您本人，回复"是我"。' % t.tid, pt=t.center())
+            if ptz.enabled and not ptz.busy:
+                dx = (t.center()[0] - c.W / 2) / c.W
+                sched.once('ptz_follow', lambda d=dx: ptz.nudge(d), lane='io')
+            break
+
+    def t_illness(c):
+        a = svc['audio']
+        distress = bool(a and a.heard('distress', 30))
+        for t in c.persons:
+            r = illness.update(t.tid, c.kpts.get(t.tid), t.bbox, c.posture.get(t.tid, 'unknown'),
+                               t.center(), c.zones if c.zones_valid else {}, time.time(), in_poly,
+                               fell_recently=time.time() - c.fall_ts.get(t.tid, 0) < 600,
+                               heard_distress=distress, is_night=c.mode == NIGHT)
+            if r:
+                lvl, et, text = r
+                signal(et, lvl, text, subject=t.tid, pt=t.center())
+        illness.forget({t.tid for t in c.persons})
+
+    def t_child(c):
+        info = [(t, c.kpts.get(t.tid), c.posture.get(t.tid, 'unknown')) for t in c.persons]
+        for lvl, et, text in child.update(info, c.zones, c.W, c.H, time.time(), in_poly):
+            signal(et, lvl, text, pt=None)
+
+    def t_zones(c):
+        now = time.time()
+        for t in c.persons:
+            for z in c.zones.get('bathroom_zones', []):
+                key = (t.tid, z['name'])
+                if in_poly(t.center(), z['poly']):
+                    c.zone_enter.setdefault(key, now)
+                    if now - c.zone_enter[key] > ZONE_DWELL_MIN * 60:
+                        signal('zone_dwell', 'CRITICAL', '在%s已停留超过 %g 分钟。'
+                               % (z['name'], ZONE_DWELL_MIN), subject=t.tid, pt=t.center())
+                else:
+                    c.zone_enter.pop(key, None)
+        if c.mode == NIGHT and c.persons and c.zones.get('bedroom_zones'):
+            if not any(in_poly(t.center(), z['poly']) for t in c.persons for z in c.zones['bedroom_zones']):
+                signal('night_wander', 'GUARD', '夜间检测到有人在卧室外活动。', pt=c.persons[0].center())
+        for t in c.pets:
+            for z in c.zones.get('cat_zones', []):
+                if in_poly(t.center(), z['poly']):
+                    signal('cat_zone', 'PET', '%s上了%s！已抓拍。'
+                           % ('猫咪' if t.cls == CAT else '狗狗', z['name']), subject=z['name'])
+
+    def t_activity(c):
+        now = time.time()
+        pet_log.update(c.pets, c.zones, c.W, c.H, now, in_poly)
+        person_log.update(c.persons, c.zones, c.W, c.H, now, in_poly)
+
+    def t_absence(c):
+        gone = time.time() - c.last_person_ts
+        if gone > ABSENCE_MIN * 60:
+            signal('absence', 'INFO', '家中已 %.1f 小时未检测到人。' % (gone / 3600))
+
+    def t_pet_unseen(c):
+        hrs = float(cfg('PET_UNSEEN_HOURS', 0))
+        u = pet_log.unseen_for(time.time())
+        if hrs > 0 and u and u > hrs * 3600:
+            signal('pet_unseen', 'PET', '已 %.1f 小时没看到宠物，可能躲起来了，可以留意一下。' % (u / 3600))
+
+    def t_base(c):
+        frame, _, _ = svc['frames'].latest()
+        if frame is not None:
+            cv2.imwrite(os.path.join(ev_dir, 'base_%s.jpg' % time.strftime('%Y%m%d')), frame)
+
+    def t_status(c):
+        f, a = svc['frames'], svc['audio']
+        total = sum(level.time_in.values()) or 1
+        upkeep.write_status(os.path.join(ev_dir, 'status.json'), {
+            'time': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'uptime_h': round((time.time() - c.started) / 3600, 2),
+            'mode': c.mode, 'mode_cn': MODE_CN.get(c.mode), 'level': c.level,
+            'level_share': {k: round(v / total, 3) for k, v in level.time_in.items()},
+            'zones_valid': c.zones_valid,
+            'frames': {'connected': bool(f and f.connected), 'stream_fps': round(f.fps, 1) if f else 0,
+                       'stale_sec': round(min(f.stale_for(), 9e5), 1) if f else None,
+                       'reconnects': f.reconnects if f else 0},
+            'audio': {'running': bool(a and a.is_alive()), 'level_db': round(a.level_db, 1) if a else None,
+                      'inferences': a.inferences if a else 0},
+            'tasks': sched.stats(),
+            'open_incidents': incidents.snapshot(),
+            'disk': svc['disk'],
+        })
+
+    def t_retention(c):
+        svc['disk'] = upkeep.retention(ev_dir, keep_days=float(cfg('RETAIN_DAYS', 7)),
+                                       max_gb=float(cfg('MAX_EVENTS_GB', 5)))
+        for name in ('alerts.jsonl', 'incidents.jsonl'):
+            upkeep.rotate_log(os.path.join(ev_dir, name))
+
+    def t_save(c):
+        pet_log.save()
+        person_log.save()
+
+    def t_ptz_return(c):
+        ptz.maybe_return(target_present=bool(c.persons))
+
+    def daily_report():
+        from report import daily_report as build
+        text = build()
+        head = '\n'.join(text.splitlines()[:12])
+        butler.notify('MORNING', head, event_type='daily_report', cooldown=0)
+
+    has_persons = lambda c: bool(c.persons)
+    zones_ok = lambda c: c.zones_valid
+    R = [
+        #    名称          函数          间隔                     优先级  车道   触发       模式            条件
+        Task('watchdog',   t_watchdog,   10,                      0, 'cpu', desc='断流 / 线程挂掉自动恢复'),
+        Task('motion',     t_motion,     0.2,                     0, 'cpu', desc='帧差判断动静，决定警觉等级'),
+        Task('detect',     t_detect,     DETECT_EVERY,            1, 'cpu', desc='人 / 猫狗检测 + 跟踪'),
+        Task('pose',       t_pose,       None,                    1, 'cpu', 'detect', when=has_persons,
+             desc='有人才跑姿态：跌倒、久卧'),
+        Task('audio',      t_audio,      0.25,                    2, 'cpu', desc='取出声音事件'),
+        Task('intrusion',  t_intrusion,  None,                    2, 'cpu', 'detect', (AWAY, PET), has_persons),
+        Task('illness',    t_illness,    None,                    3, 'cpu', 'detect', (HOME, NIGHT), has_persons),
+        Task('incidents',  lambda c: incidents.tick(), 5,         3, 'cpu', desc='催办与结案'),
+        Task('zones',      t_zones,      None,                    4, 'cpu', 'detect', when=zones_ok),
+        Task('activity',   t_activity,   None,                    6, 'cpu', 'detect', when=zones_ok,
+             desc='活动统计与热力图，过载时让路'),
+        Task('absence',    t_absence,    60,                      7, 'cpu'),
+        Task('pet_unseen', t_pet_unseen, 300,                     7, 'cpu', modes=(PET,)),
+        Task('save',       t_save,       300,                     8, 'io'),
+        Task('status',     t_status,     30,                      8, 'io'),
+        Task('base_image', t_base,       600,                     9, 'io',
+             when=lambda c: c.level == IDLE and not c.tracks),
+        Task('retention',  t_retention,  3600,                    9, 'io'),
+    ]
+    if fire:
+        R.append(Task('fire', t_fire, lambda c: 0.5 if fire.hot else FIRE_EVERY[c.level], 2, 'cpu',
+                      desc='闲时 5 秒一次，有可疑立刻加密到 0.5 秒'))
+    if child:
+        R.append(Task('child', t_child, None, 3, 'cpu', 'detect',
+                      when=lambda c: bool(c.persons) and c.zones_valid))
+    if ptz.enabled:
+        R.append(Task('ptz_return', t_ptz_return, 5, 9, 'io', desc='目标离开后云台复位'))
+    for t in R:
+        sched.add(t)
+    sched.daily('daily_report', cfg('REPORT_AT', '21:30'), daily_report)
+
+    # 指令里需要调度的部分
+    def on_command(text):
+        if text == '状态':
+            return '模式：%s；警觉：%s；未结事件 %d 件；画面%s。' % (
+                MODE_CN.get(ctx.mode), ctx.level, len(incidents.open),
+                '正常' if svc['frames'] and svc['frames'].stale_for() < 10 else '中断')
+        frame, _, _ = svc['frames'].latest()
+        if frame is None:
+            return '暂时没有画面。'
+        path = os.path.join(ev_dir, 'snap_look_%s.jpg' % time.strftime('%Y%m%d_%H%M%S'))
+        img = frame.copy()
+        sched.once('look', lambda: cv2.imwrite(path, img), lane='io')
+        return '已抓拍：%s' % path
+    butler.on_command = on_command
+
+    enabled = [t.name for t in sched.tasks]
+    print('[butler] 值班表：%s' % enabled)
+    print('[butler] 能力：姿态=%s 火焰=%s 声音=%s 儿童=%s 存证=%s 云台跟踪=%s 跟踪器=%s 区域=%s'
+          % (bool(pose_model), bool(fire), bool(svc['audio']), bool(child), bool(clips),
+             ptz.enabled, type(tracker).__name__, [k for k, v in zones.items() if v]))
+    butler.notify('INFO', '%s上线，当前模式：%s。有事我叫你。' % (butler.name, MODE_CN[butler.mode]),
                   cooldown=0)
-
-    last_ana = last_status = last_follow = last_absence = last_fire = 0
-    last_save, last_base = time.time(), 0
-    fall_ts = {}                     # tid -> 最近一次跌倒时间
-    last_person_ts = time.time()     # 最近一次看到人
-    frame_id = 0
-
-    def snap(frame, tag):
-        p = os.path.join(ev_dir, 'snap_%s_%s.jpg' % (tag, time.strftime('%Y%m%d_%H%M%S')))
-        cv2.imwrite(p, frame)
-        return p
-
-    def evidence(frame, tag):
-        return snap(frame, tag), (clips.trigger(tag) if clips else None)
 
     try:
         while True:
-            ok, frame = cap.read()
-            if not ok:
-                time.sleep(0.5)
-                cap.release()
-                cap = cv2.VideoCapture(args.source)
-                continue
-            frame_id += 1
-            now = time.time()
-            if clips:
-                clips.push(frame, now)
-            if now - last_ana < 1.0 / args.fps:
-                continue
-            last_ana = now
-            H, W = frame.shape[:2]
-
-            dets = [d for d in det_model(frame)
-                    if (d['cls'] == PERSON and d['score'] > FALL_CFG['min_score'])
-                    or (d['cls'] in (CAT, DOG) and d['score'] > CAT_CFG['min_score'])]
-            pose_dets = pose_model(frame, 0.3) if pose_model else []
-            tracks = tracker.update(dets, now)
-            person_tracks = [t for t in tracks if t.cls == PERSON]
-            pet_tracks = [t for t in tracks if t.cls in (CAT, DOG)]
-            butler.update_presence(bool(person_tracks),
-                                   only_pets=bool(pet_tracks) and not person_tracks)
-            if person_tracks:
-                last_person_ts = now
-
-            def nearest_pose(bbox):
-                best, bi = None, 0.2
-                for p in pose_dets:
-                    i = SimpleTracker._iou(bbox, p['bbox'])
-                    if i > bi:
-                        best, bi = p, i
-                return best
-
-            # ---- 火焰 / 烟雾：所有模式，约 1 次/秒 ----
-            if fire and now - last_fire >= 1.0:
-                last_fire = now
-                r = fire.update(frame, now)
-                if r:
-                    what = '、'.join(sorted({'fire': '明火', 'smoke': '烟雾'}.get(l, l)
-                                           for l in r['labels']))
-                    heard = audio and audio.heard('smoke_alarm', within=60)
-                    if r['level'] == 'confirmed' or heard:
-                        s, c = evidence(frame, 'fire')
-                        butler.notify('CRITICAL', '画面中持续出现%s%s，请立即确认！'
-                                      % (what, '，同时听到报警器声' if heard else ''),
-                                      event_type='fire', snapshot=s, clip=c)
-                    else:
-                        s, c = evidence(frame, 'fire_suspect')
-                        butler.notify('GUARD', '疑似出现%s（置信度 %.2f），正在持续观察。'
-                                      % (what, r['score']), event_type='fire_suspect',
-                                      snapshot=s, clip=c)
-
-            # ---- 人 ----
-            person_info = []
-            for t in person_tracks:
-                c = t.center()
-                pd = nearest_pose(t.bbox)
-                kpts = pd.get('kpts') if pd else None
-                evt = psm.update(t.tid, kpts, t.bbox, now)
-                posture = psm.sm.get(t.tid, {}).get('state', 'unknown')
-                person_info.append((t, kpts, posture))
-
-                if evt == 'fall':
-                    fall_ts[t.tid] = now
-                    s, cl = evidence(frame, 'fall')
-                    butler.notify('CRITICAL', '判断有人跌倒（#%d）！已抓拍并录像。' % t.tid,
-                                  event_type='fall', snapshot=s, clip=cl)
-                elif evt == 'lying_long':
-                    s, cl = evidence(frame, 'lying')
-                    butler.notify('CRITICAL', '有人倒地超过 %g 秒未起身，请查看。'
-                                  % FALL_CFG['lying_min_secs'],
-                                  event_type='lying_long', cooldown=600, snapshot=s, clip=cl)
-
-                # 突发不适（有人在家时）
-                if butler.mode in (HOME, NIGHT):
-                    r = illness.update(t.tid, kpts, t.bbox, posture, c, zones, now, in_poly,
-                                       fell_recently=now - fall_ts.get(t.tid, 0) < 600,
-                                       heard_distress=bool(audio and audio.heard('distress', 30)),
-                                       is_night=butler.mode == NIGHT)
-                    if r:
-                        level, et, text = r
-                        s, cl = evidence(frame, et) if level == 'CRITICAL' else (snap(frame, et), None)
-                        butler.notify(level, text, event_type=et, snapshot=s, clip=cl)
-
-                # 卫生间久滞
-                for z in zones.get('bathroom_zones', []):
-                    if in_poly(c, z['poly']):
-                        key = (t.tid, z['name'])
-                        zone_enter.setdefault(key, now)
-                        if now - zone_enter[key] > ZONE_DWELL_MIN * 60:
-                            butler.notify('CRITICAL', '在%s已停留超过 %g 分钟。'
-                                          % (z['name'], ZONE_DWELL_MIN), event_type='zone_dwell')
-                    else:
-                        zone_enter.pop((t.tid, z['name']), None)
-
-                # 入侵：无人值守 / 宠物模式下出现确认的人形
-                if butler.mode in (AWAY, PET) and t.hits >= 8:
-                    s, cl = evidence(frame, 'intrusion')
-                    sent = butler.notify('GUARD', '家中无人，但检测到移动的人形（#%d），'
-                                         '已抓拍并录像。若是您本人，回复"是我"。' % t.tid,
-                                         event_type='intrusion', snapshot=s, clip=cl)
-                    if sent and args.follow and now - last_follow > 2:
-                        dx = (c[0] - W / 2) / W
-                        if abs(dx) > 0.15:
-                            try:
-                                from onvif_ptz import continuous_move, stop, get_profile_token
-                                tok = get_profile_token()
-                                continuous_move(tok, 0.4 if dx > 0 else -0.4, 0)
-                                time.sleep(0.4)
-                                stop(tok)
-                            except Exception as e:
-                                print('follow fail:', e)
-                        last_follow = now
-
-            illness.forget({t.tid for t in person_tracks})
-
-            # 儿童危险
-            if child and person_info:
-                for level, et, text in child.update(person_info, zones, W, H, now, in_poly):
-                    s, cl = evidence(frame, et) if level == 'CRITICAL' else (snap(frame, et), None)
-                    butler.notify(level, text, event_type=et, snapshot=s, clip=cl)
-
-            # 长时间无人出现
-            absence = now - last_person_ts
-            if absence > ABSENCE_MIN * 60 and now - last_absence > 3600:
-                butler.notify('INFO', '家中已 %.1f 小时未检测到人。' % (absence / 3600),
-                              event_type='absence')
-                last_absence = now
-
-            # 夜间离开卧室
-            if butler.mode == NIGHT and person_tracks and zones.get('bedroom_zones'):
-                in_bed = any(in_poly(t.center(), z['poly'])
-                             for t in person_tracks for z in zones['bedroom_zones'])
-                if not in_bed:
-                    butler.notify('GUARD', '夜间检测到有人在卧室外活动。', event_type='night_wander')
-
-            # ---- 宠物 ----
-            for t in pet_tracks:
-                for z in zones.get('cat_zones', []):
-                    if in_poly(t.center(), z['poly']):
-                        s = snap(frame, 'pet_zone')
-                        butler.notify('PET', '%s上了%s！已抓拍。'
-                                      % ('猫咪' if t.cls == CAT else '狗狗', z['name']),
-                                      event_type='cat_zone', snapshot=s)
-            pet_log.update(pet_tracks, zones, W, H, now, in_poly)
-            person_log.update(person_tracks, zones, W, H, now, in_poly)
-            if pet_unseen_h > 0 and butler.mode == PET:
-                u = pet_log.unseen_for(now)
-                if u and u > pet_unseen_h * 3600:
-                    butler.notify('PET', '已 %.1f 小时没在画面里看到宠物，可能躲起来了，可以留意一下。'
-                                  % (u / 3600), event_type='pet_unseen')
-
-            # 每天存一张无人底图，用于热力图叠加
-            if not tracks and now - last_base > 3600:
-                cv2.imwrite(os.path.join(ev_dir, 'base_%s.jpg' % time.strftime('%Y%m%d')), frame)
-                last_base = now
-
-            if now - last_status > 30:
-                print('[status] mode=%s persons=%d pets=%d audio=%s'
-                      % (butler.mode, len(person_tracks), len(pet_tracks),
-                         '%.0fdB' % audio.level_db if audio else '-'))
-                last_status = now
-            if now - last_save > 300:
-                pet_log.save()
-                person_log.save()
-                last_save = now
-
-            if not args.no_display:
-                for t in tracks:
-                    x1, y1, x2, y2 = map(int, t.bbox)
-                    kid = child and t.cls == PERSON and child.is_child(t.tid)
-                    cv2.rectangle(frame, (x1, y1), (x2, y2),
-                                  (0, 200, 255) if kid else
-                                  (0, 255, 0) if t.cls == PERSON else (255, 0, 255), 2)
-                    cv2.putText(frame, '#%d %s' % (t.tid, 'child' if kid else CLASS_NAMES.get(t.cls, '?')),
-                                (x1, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                cv2.imshow('butler', frame)
-                if cv2.waitKey(1) == 27:
-                    break
+            sched.tick(ctx)
+            time.sleep(min(sched.next_wakeup(ctx), 0.1))
+    except KeyboardInterrupt:
+        print('[butler] 收到退出指令，正在保存…')
     finally:
-        pet_log.save()
-        person_log.save()
+        t_save(ctx)
         if clips:
             clips.flush()
-        if audio:
-            audio.stop()
-        cap.release()
+        if svc['audio']:
+            svc['audio'].stop()
+        if svc['frames']:
+            svc['frames'].stop()
+        sched.shutdown()
 
-
-zone_enter = {}   # (tid, zone_name) -> ts
 
 if __name__ == '__main__':
     main()

@@ -64,7 +64,7 @@ class ActivityLog:
                 self.stats['sightings'] += 1
                 prev = {'c': c, 'ts': now, 'zones': set(), 'still': 0.0}
                 self.tracks[t.tid] = prev
-            dt = min(now - prev['ts'], 2.0)
+            dt = min(now - prev['ts'], 5.0)   # 闲时检测间隔较长，上限放宽
             d = np.hypot(c[0] - prev['c'][0], c[1] - prev['c'][1]) / W
             if d > self.move_th:
                 self.stats['active_sec'] += dt

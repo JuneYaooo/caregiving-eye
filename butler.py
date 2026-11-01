@@ -2,7 +2,7 @@
 """米执事本体: 值班模式引擎 + 通报话术 + 推送 + 指令
 被 care_v2 等感知层调用; 也可独立 import 用于发日报/接收指令。
 """
-import json, os, time, threading
+import json, os, queue, time, threading
 import urllib.request
 from common_config import cfg
 
@@ -46,7 +46,13 @@ class Butler:
         self.person_since = None         # 有人出现的起始时间
         self.person_absent_since = None
         self.schedule = self._parse_schedule(cfg('MODE_SCHEDULE', ''))
-        self._lock = threading.Lock()    # 声音线程与视频主循环会同时通报
+        self._lock = threading.Lock()    # 多个线程可能同时通报
+        self.incidents = None            # 由大脑注入：事件研判层
+        self.on_command = None           # 由大脑注入：处理“状态 / 看看”等需要调度的指令
+        # 推送放到后台线程，网络卡顿不会拖慢识别
+        self._outbox = queue.Queue(maxsize=200)
+        if self.webhook:
+            threading.Thread(target=self._sender, daemon=True, name='webhook').start()
 
     # ---------- 值班制度 ----------
     @staticmethod
@@ -145,27 +151,46 @@ class Butler:
                'snapshot': snapshot, 'clip': clip}
         with open(self.events_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(rec, ensure_ascii=False) + '\n')
-        # 推送
+        # 推送（异步）
         if self.webhook:
             try:
-                body = json.dumps({'msgtype': 'text',
-                                   'text': {'content': full}}).encode()
-                req = urllib.request.Request(self.webhook, data=body,
-                                             headers={'Content-Type': 'application/json'})
-                urllib.request.urlopen(req, timeout=5)
-            except Exception as e:
-                print('webhook fail:', e)
+                self._outbox.put_nowait(full)
+            except queue.Full:
+                print('webhook 队列已满，丢弃一条')
         return True
+
+    def _sender(self):
+        while True:
+            text = self._outbox.get()
+            for attempt in range(3):
+                try:
+                    body = json.dumps({'msgtype': 'text', 'text': {'content': text}}).encode()
+                    req = urllib.request.Request(self.webhook, data=body,
+                                                 headers={'Content-Type': 'application/json'})
+                    urllib.request.urlopen(req, timeout=5)
+                    break
+                except Exception as e:
+                    print('webhook fail (%d/3):' % (attempt + 1), e)
+                    time.sleep(2 ** attempt)
 
     # ---------- 指令 ----------
     def handle_command(self, text):
         """返回执事的回应文本; None=非指令"""
         t = (text or '').strip()
         if t in ('是我', '是我本人'):
+            if self.incidents:
+                self.incidents.ack('me', families={'security'})
             self.set_manual_mode(HOME, hours=2)
             return '欢迎回家，%s。切换在家照护。' % self.owner
-        if t in ('没事', '没事了', '虚惊'):
-            return '好的，%s，我记下本次为虚惊。' % self.owner
+        if t in ('没事', '没事了', '虚惊', '误报'):
+            n = self.incidents.ack('false') if self.incidents else 0
+            return ('好的，%s，记为误报。同一位置多次误报后我会降低这里的提醒级别。' % self.owner
+                    if n else '好的，%s，目前没有待确认的事件。' % self.owner)
+        if t in ('收到', '我去看', '知道了'):
+            n = self.incidents.ack('ok') if self.incidents else 0
+            return '好的，不再催促。' if n else '目前没有待确认的事件。'
+        if t in ('状态', '看看', '看看客厅') and self.on_command:
+            return self.on_command(t)
         if t.startswith('静音'):
             hours = 1
             try:

@@ -49,10 +49,11 @@ class ByteTrackAdapter:
         return [t for tid, t in self.tracks.items() if tid in seen and t.hits >= self.min_hits]
 
 
-def make_tracker(kind='iou', fps=3):
+def make_tracker(kind='iou', fps=3, max_misses=4.0):
+    """max_misses：目标消失多少秒后丢弃。闲时检测间隔约 1.5 秒，所以要大于它"""
     if kind == 'bytetrack':
         try:
             return ByteTrackAdapter(fps=fps)
         except Exception as e:
             print('[tracker] ByteTrack 不可用（%s），回退到 IoU 跟踪' % e)
-    return SimpleTracker()
+    return SimpleTracker(max_misses=max_misses)

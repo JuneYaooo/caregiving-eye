@@ -78,6 +78,31 @@ class SimpleTracker:
             else:
                 t.misses = now - t.last_seen
 
+        # 1b. 兜底：IoU 没匹配上时按中心距离匹配。跌倒时人框会从“竖长”突变为“横长”，
+        #     IoU 很低但中心离得不远；不兜底会被当成新目标，跌倒前的站立历史就丢了。
+        for t in list(self.tracks.values()):
+            if t.last_seen == now or not unmatched_dets:
+                continue
+            x1, y1, x2, y2 = t.bbox
+            diag = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+            cx, cy = t.center()
+            best, best_d = None, 0.6 * diag
+            for di in unmatched_dets:
+                if dets[di]['cls'] != t.cls:
+                    continue
+                bx1, by1, bx2, by2 = dets[di]['bbox']
+                d = (((bx1 + bx2) / 2 - cx) ** 2 + ((by1 + by2) / 2 - cy) ** 2) ** 0.5
+                if d < best_d:
+                    best, best_d = di, d
+            if best is not None:
+                unmatched_dets.remove(best)
+                t.bbox, t.score = dets[best]['bbox'], dets[best]['score']
+                t.hits += 1
+                t.misses = 0
+                t.last_seen = now
+                bx1, by1, bx2, by2 = t.bbox
+                t.centers = (t.centers + [((bx1 + bx2) / 2, (by1 + by2) / 2)])[-120:]
+
         # 2. 新轨
         for di in unmatched_dets:
             t = Track(self._next_id, dets[di], now)

@@ -33,6 +33,11 @@ class FireSmokeDetector:
         names = [s.strip() for s in cfg('FIRE_CLASSES', 'smoke,fire').split(',') if s.strip()]
         return cls(path, names, score_th=float(cfg('FIRE_SCORE', 0.45)))
 
+    @property
+    def hot(self):
+        """最近有可疑命中：调度器据此把检查频率从每 5 秒提到每 0.5 秒"""
+        return bool(self.hits)
+
     def update(self, frame, now):
         """返回 None / {'level': 'suspect'|'confirmed', 'labels': set, 'bbox': [...], 'score': float}"""
         H, W = frame.shape[:2]

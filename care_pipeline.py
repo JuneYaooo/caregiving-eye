@@ -44,6 +44,8 @@ def letterbox(img, new=640):
 class YoloOnnx:
     def __init__(self, path, providers=None):
         so = ort.SessionOptions()
+        # 限制单个模型的线程数，避免多个模型与解码线程互相抢 CPU
+        so.intra_op_num_threads = int(cfg('ORT_THREADS', 2))
         self.sess = ort.InferenceSession(path, so, providers or ['CPUExecutionProvider'])
         self.input = self.sess.get_inputs()[0].name
         out = self.sess.get_outputs()[0].shape

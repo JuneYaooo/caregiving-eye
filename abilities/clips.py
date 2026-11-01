@@ -16,6 +16,7 @@ class ClipRecorder:
         self.buf = collections.deque(maxlen=max(1, int(pre_sec * fps)))
         self.active = []          # [{'path','until','frames'}]
         self._last_push = 0
+        self._lock = threading.Lock()     # 拉流线程 push，主循环 trigger
         os.makedirs(out_dir, exist_ok=True)
 
     def _small(self, frame):
@@ -31,26 +32,29 @@ class ClipRecorder:
             return
         self._last_push = now
         small = self._small(frame)
-        self.buf.append(small)
-        done = []
-        for c in self.active:
-            c['frames'].append(small)
-            if now >= c['until']:
-                done.append(c)
+        with self._lock:
+            self.buf.append(small)
+            done = []
+            for c in self.active:
+                c['frames'].append(small)
+                if now >= c['until']:
+                    done.append(c)
+            for c in done:
+                self.active.remove(c)
         for c in done:
-            self.active.remove(c)
             threading.Thread(target=self._write, args=(c,), daemon=True).start()
 
     def trigger(self, tag, now=None):
         """开始一段存证；同一 tag 正在录制时复用，返回 mp4 路径"""
         now = now or time.time()
-        for c in self.active:
-            if c['tag'] == tag:
-                c['until'] = max(c['until'], now + self.post_sec)
-                return c['path']
-        path = os.path.join(self.out_dir, 'clip_%s_%s.mp4' % (tag, time.strftime('%Y%m%d_%H%M%S')))
-        self.active.append({'tag': tag, 'path': path, 'until': now + self.post_sec,
-                            'frames': list(self.buf)})
+        with self._lock:
+            for c in self.active:
+                if c['tag'] == tag:
+                    c['until'] = max(c['until'], now + self.post_sec)
+                    return c['path']
+            path = os.path.join(self.out_dir, 'clip_%s_%s.mp4' % (tag, time.strftime('%Y%m%d_%H%M%S')))
+            self.active.append({'tag': tag, 'path': path, 'until': now + self.post_sec,
+                                'frames': list(self.buf)})
         return path
 
     def _write(self, c):
@@ -65,6 +69,7 @@ class ClipRecorder:
         vw.release()
 
     def flush(self):
-        for c in self.active:
+        with self._lock:
+            active, self.active = self.active, []
+        for c in active:
             self._write(c)
-        self.active = []

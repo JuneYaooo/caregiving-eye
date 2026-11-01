@@ -6,6 +6,9 @@
 放到 models/yamnet.onnx 与 models/yamnet_class_map.csv。
 需要系统已安装 ffmpeg，并且 go2rtc 流带音频轨。
 
+线程模型：本模块是一个常驻服务线程，只把识别结果放进队列，不直接发通知；
+主循环里的 drain 任务取出后交给研判层，保证所有通知都在同一处排队、合并、去重。
+
 事件分组（按 AudioSet 类名匹配，可在 GROUPS 里调整）：
   smoke_alarm  烟雾 / 火警报警器
   glass        玻璃碎裂、撞击
@@ -13,7 +16,7 @@
   baby_cry     婴儿哭
   pet_distress 猫狗嘶叫、哀鸣、长时间吠叫
 """
-import collections, csv, os, subprocess, threading, time
+import collections, csv, os, queue, subprocess, threading, time
 import numpy as np
 
 SR = 16000
@@ -40,7 +43,9 @@ def load_class_map(path):
 class YamnetOnnx:
     def __init__(self, model_path, class_map_path):
         import onnxruntime as ort
-        self.sess = ort.InferenceSession(model_path, providers=['CPUExecutionProvider'])
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = 1       # 声音模型很小，单线程即可，把 CPU 留给视觉
+        self.sess = ort.InferenceSession(model_path, so, providers=['CPUExecutionProvider'])
         self.inp = self.sess.get_inputs()[0].name
         self.names = load_class_map(class_map_path)
         idx = {n: i for i, n in enumerate(self.names)}
@@ -58,24 +63,26 @@ class YamnetOnnx:
 class AudioListener(threading.Thread):
     """后台线程：持续拉音频、每 hop 秒分析一次最近 win 秒"""
 
-    def __init__(self, source, model, win=1.0, hop=0.5, on_event=None):
-        super().__init__(daemon=True)
+    def __init__(self, source, model, win=1.0, hop=0.5):
+        super().__init__(daemon=True, name='audio')
         self.source, self.model = source, model
         self.win, self.hop = win, hop
-        self.on_event = on_event
+        self.events = queue.Queue(maxsize=500)        # (ts, group, score, top)
         self.recent = collections.deque(maxlen=200)   # (ts, group, score)
         self.alive = True
         self.level_db = -90.0
+        self.last_data = 0.0
+        self.inferences = 0
 
     @classmethod
-    def from_env(cls, cfg, on_event=None):
+    def from_env(cls, cfg):
         md = cfg('MODELS_DIR', 'models')
         mp = cfg('AUDIO_MODEL', os.path.join(md, 'yamnet.onnx'))
         cp = cfg('AUDIO_CLASS_MAP', os.path.join(md, 'yamnet_class_map.csv'))
         src = cfg('AUDIO_SOURCE', cfg('RTSP_URL'))
         if not (src and os.path.exists(mp) and os.path.exists(cp)):
             return None
-        return cls(src, YamnetOnnx(mp, cp), on_event=on_event)
+        return cls(src, YamnetOnnx(mp, cp))
 
     def _open(self):
         cmd = ['ffmpeg', '-loglevel', 'error', '-rtsp_transport', 'tcp', '-i', self.source,
@@ -100,16 +107,20 @@ class AudioListener(threading.Thread):
                     break
                 chunk = np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
                 ring = np.concatenate([ring[len(chunk):], chunk])
+                self.last_data = time.time()
                 self.level_db = 20 * np.log10(np.sqrt(np.mean(ring ** 2)) + 1e-9)
-                if self.level_db < -60:      # 太安静就不跑模型
+                if self.level_db < -60:      # 太安静就不跑模型：安静的夜里几乎零开销
                     continue
                 groups, top = self.model(ring)
+                self.inferences += 1
                 now = time.time()
                 for g, s in groups.items():
                     if s >= GROUP_TH.get(g, 0.4):
                         self.recent.append((now, g, s))
-                        if self.on_event:
-                            self.on_event(g, s, top)
+                        try:
+                            self.events.put_nowait((now, g, s, top))
+                        except queue.Full:
+                            pass
             proc.kill()
             time.sleep(3)   # 断流重连
 

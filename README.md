@@ -15,7 +15,7 @@
 [![Abilities](https://img.shields.io/badge/Abilities-20%2B-B08D57)](#三种场景执事都在做什么)
 [![License](https://img.shields.io/badge/License-MIT-343434)](./LICENSE)
 
-[三种场景](#三种场景执事都在做什么) · [怎样工作](#执事怎样工作) · [快速开始](#快速开始) · [开源组件](#站在这些开源项目上) · [常见问题](./docs/getting-started.md#常见问题)
+[三种场景](#三种场景执事都在做什么) · [怎样工作](#执事怎样工作) · [执事的大脑](#执事的大脑省着用长期稳) · [快速开始](#快速开始) · [开源组件](#站在这些开源项目上) · [常见问题](./docs/getting-started.md#常见问题)
 
 </div>
 
@@ -92,13 +92,14 @@ flowchart LR
             see["👁️ 看<br/>人 / 猫狗 · 姿态 · 烟火"]
             hear["👂 听<br/>报警器 · 碎裂 · 哭喊"]
         end
-        track["🎯 跟踪<br/>给每个人和宠物一个编号"]
+        brain["🧠 调度<br/>按警觉等级与值班模式分配算力"]
         skill["🧩 能力层<br/>跌倒 · 不适 · 儿童 · 入侵 · 宠物活动"]
-        butler{{"🎩 米执事<br/>按值班模式决定提不提醒"}}
+        butler{{"🎩 米执事 · 研判<br/>合并 · 升级 · 催办 · 学误报"}}
         bridge --> see & hear
-        see --> track --> skill
+        brain -. 决定跑什么、多快 .-> see
+        see --> skill
         hear --> skill
-        skill --> butler
+        skill -- 信号 --> butler
     end
 
     subgraph OUT["📒 结果"]
@@ -118,16 +119,32 @@ flowchart LR
     classDef cloudc fill:#FFFFFF,stroke:#BAA58D,stroke-dasharray:4 3,color:#7A6A5A
     classDef step fill:#FFFFFF,stroke:#C9B9A6,stroke-width:1.2px,color:#302923
     classDef core fill:#742A38,stroke:#5A1F2B,stroke-width:2px,color:#FFFFFF
+    classDef gate fill:#FBF3E4,stroke:#B08D57,stroke-width:1.5px,color:#302923
     classDef result fill:#EAF0EB,stroke:#819888,stroke-width:1.2px,color:#23352B
     classDef optional fill:#FFFFFF,stroke:#819888,stroke-dasharray:4 3,color:#4E6556
 
     class cam device
     class cloud cloudc
-    class bridge,see,hear,track,skill step
+    class bridge,see,hear,skill step
+    class brain gate
     class butler core
     class log,rpt result
     class bot optional
 ```
+
+### 执事的大脑：省着用，长期稳
+
+能力多了，关键是**什么时候跑什么**。执事有一个调度层（`brain/`），像真的管家一样分轻重缓急：
+
+| 问题 | 执事的做法 |
+| --- | --- |
+| 没人没动静时还在满速跑？ | 三档**警觉等级**：画面静止时检测降到约 0.7 帧/秒，有动静升到 3 帧/秒，出事升到 5 帧/秒。姿态模型只在有人时跑，火焰模型闲时 5 秒查一次、有可疑立刻加密，声音太小不跑模型 |
+| 哪些串行，哪些并行？ | 模型推理在主循环**串行**，避免互相抢 CPU；写录像、发消息、转云台、清磁盘放进后台**并行**；拉流和听声音是**常驻线程** |
+| 长期任务和一次性任务？ | 常驻服务由看门狗守着，挂了自动拉起；周期任务按值班表跑；抓拍、转云台、日报是一次性 / 每日任务 |
+| 同一件事刷屏？ | 能力只上报信号，由**研判层**合并成一个事件：只在升级时再提醒，急报没人回就催办，回复“没事”会记住这个位置的误报 |
+| 跑几个月会不会出问题？ | 断流退避重连、单项能力报错只暂停它自己、磁盘按天数和容量自动清理、日志轮转、每 30 秒写一次心跳 `events/status.json` |
+
+完整的值班表与设计见 [执事的大脑](./docs/brain.md)。
 
 ### 值班模式自动切换
 
@@ -169,7 +186,7 @@ stateDiagram-v2
 | 〔宠物〕 | 宠物相关 | 上了禁区、嘶叫哀鸣、久未露面 |
 | 〔执事〕 | 日常记录 | 模式切换、长时间无人、日报 |
 
-每类事件都有独立冷却时间，避免同一件事反复刷屏。火情、突发不适等判断都采用“**多个信号互相印证再升级**”的方式降低误报：
+同一个人的跌倒、久卧、不适会合并成一个事件，只在级别升高时再提醒；急报没人回复会每 3 分钟催一次。火情、突发不适等判断都采用“**多个信号互相印证再升级**”的方式降低误报：
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"fontFamily": "PingFang SC, Microsoft YaHei, sans-serif", "fontSize": "13px", "lineColor": "#9C8B7A"}}}%%
@@ -203,8 +220,11 @@ flowchart LR
 # 1. 先用基础管线确认视频与模型正常
 python care_pipeline.py --source rtsp://127.0.0.1:8554/living --no-display
 
-# 2. 停掉上面的管线，启动执事（启动日志会列出实际启用的能力）
-python care_v2.py --source rtsp://127.0.0.1:8554/living --no-display
+# 2. 停掉上面的管线，启动执事（启动日志会列出值班表和实际启用的能力）
+python care_v2.py --source rtsp://127.0.0.1:8554/living
+
+# 也可以用自家录像回放来校准区域和阈值
+python care_v2.py --source my_living_room.mp4
 
 # 3. 随时生成今天的日报：事件 + 宠物 / 家人活动 + 热力图
 python report.py
@@ -216,8 +236,15 @@ python report.py
 <summary>项目结构</summary>
 
 ```text
-care_v2.py          执事主循环：拉流 → 感知 → 按模式调度各项能力
-butler.py           值班模式引擎、提醒分级与冷却、指令
+care_v2.py          执事主程序：组件装配 + 值班表
+butler.py           值班模式引擎、提醒措辞、推送、主人指令
+brain/
+  runtime.py        任务调度：周期 / 触发 / 一次性 / 每日，cpu 与 io 两条车道
+  frames.py         拉流服务：只留最新帧，断流重连
+  gate.py           动静判断与警觉等级
+  incidents.py      事件研判：合并、升级、催办、结案、学误报
+  upkeep.py         磁盘清理、日志轮转、心跳
+  ptz.py            云台独占控制与复位
 report.py           日报：事件汇总、活动总结、热力图
 abilities/
   fire.py           火焰 / 烟雾视觉检测
@@ -249,7 +276,7 @@ mi_login.py 等      米家登录与设备查询
 
 ## 实测记录
 
-以下来自项目已有的单设备测试记录，不能代表检测准确率或所有网络环境下的性能。本次新增的火焰烟雾、声音、儿童、突发不适、宠物活动等能力尚未在真实画面上实测。
+以下来自项目已有的单设备测试记录，不能代表检测准确率或所有网络环境下的性能。火焰烟雾、声音、儿童、突发不适、宠物活动和调度层目前只用合成画面验证过流程，尚未在真实画面上实测。
 
 | 项目 | 已记录结果 | 观察方式 |
 | --- | --- | --- |

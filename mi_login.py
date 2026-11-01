@@ -151,8 +151,8 @@ def main():
         # 验证成功后重新密码登录拿 location
         d2 = password_auth(s, user, pwd)
         loc = d2.get('location') or loc
-    assert loc, '登录未完成: securityStatus=%s (可能需要浏览器完成确认安全手机, '
-                '打开上方 notificationUrl 处理后重跑)' % d2.get('securityStatus')
+    assert loc, ('登录未完成: securityStatus=%s (可能需要浏览器完成确认安全手机, '
+                 '打开上方 notificationUrl 处理后重跑)' % d2.get('securityStatus'))
 
     got = chase_location(s, loc)
     svt = s.cookies.get('serviceToken') or got.get('serviceToken')
