@@ -33,6 +33,8 @@ from abilities.child import ChildSafety
 from abilities.illness import IllnessMonitor
 from abilities.pet import ActivityLog
 from abilities.tracking import make_tracker
+from abilities.fall_gcn import FallClassifier, FallFusion
+from abilities.routine import RoutineMonitor
 
 PERSON, CAT, DOG = 0, 15, 16
 CLASS_NAMES = {PERSON: 'person', CAT: 'cat', DOG: 'dog'}
@@ -155,6 +157,8 @@ class Ctx:
         self.fall_ts = {}
         self.zone_enter = {}
         self.last_person_ts = time.time()
+        self.person_seen_ts = None        # 本次运行里真正看到人的最近时间（作息判断用）
+        self.centers = {}                 # tid -> 最近位置，跌倒待定时目标可能已经丢失
         self.zones_valid = True
         self.started = time.time()
 
@@ -209,9 +213,13 @@ def main():
     fire = FireSmokeDetector.from_env(cfg)
     child = ChildSafety.from_env(cfg)
     illness = IllnessMonitor.from_env(cfg)
+    fall_clf = FallClassifier.from_env(cfg)
+    fusion = FallFusion.from_env(fall_clf, cfg) if fall_clf else None
+    routine = RoutineMonitor.from_env(ev_dir, cfg)
     pet_log = ActivityLog('pet', ev_dir, zone_keys=('pet_zones', 'cat_zones'))
     person_log = ActivityLog('person', ev_dir,
-                             zone_keys=('bathroom_zones', 'bedroom_zones', 'rest_zones'))
+                             zone_keys=('bathroom_zones', 'bedroom_zones', 'rest_zones'),
+                             morning_from=routine.day_start if routine else 4)
     clips = None if args.no_clips else ClipRecorder(
         os.path.join(ev_dir, 'clips'), pre_sec=float(cfg('CLIP_PRE_SEC', 10)),
         post_sec=float(cfg('CLIP_POST_SEC', 15)), width=int(cfg('CLIP_WIDTH', 640)))
@@ -303,15 +311,34 @@ def main():
         c.mode = butler.update_presence(bool(c.persons),
                                         only_pets=bool(c.pets) and not c.persons)
         if c.persons:
-            c.last_person_ts = ts
+            c.last_person_ts = c.person_seen_ts = ts
         c.det_seq += 1
 
     def in_rest(pt):
         return ctx.zones_valid and any(in_poly(pt, z['poly']) for z in ctx.zones.get('rest_zones', []))
 
+    def fall_verdicts(verdicts):
+        """姿态规则与骨架模型并联研判的结论 → 信号"""
+        for tid, kind, p in verdicts:
+            ctx.fall_ts[tid] = time.time()
+            pt = ctx.centers.get(tid)
+            if kind == 'confirmed':
+                signal('fall', 'CRITICAL', '判断有人跌倒（#%d，姿态规则与骨架模型都判断为跌倒，%.0f%%），'
+                       '已抓拍并录像。' % (tid, p * 100), subject=tid, pt=pt)
+            elif kind == 'rule':
+                signal('fall', 'CRITICAL', '判断有人跌倒（#%d%s），已抓拍并录像。'
+                       % (tid, '，骨架模型 %.0f%%' % (p * 100) if p else ''), subject=tid, pt=pt)
+            elif kind == 'rule_only':
+                signal('fall_suspect', 'GUARD', '疑似跌倒（#%d）：姿态从站立突然变为倒地，骨架模型未确认。'
+                       '已抓拍并录像，一直没起身会升级为急报。' % tid, subject=tid, pt=pt)
+            else:
+                signal('fall_suspect', 'GUARD', '疑似跌倒（#%d）：骨架模型判断刚才的动作像跌倒（%.0f%%）。'
+                       '已抓拍并录像。' % (tid, p * 100), subject=tid, pt=pt)
+
     def t_pose(c):
         pose_dets = pose_model(c.frame, 0.3) if pose_model else []
         c.kpts, c.posture = {}, {}
+        probs = {}
         for t in c.persons:
             best, bi = None, 0.2
             for p in pose_dets:
@@ -327,21 +354,48 @@ def main():
             evt = psm.update(t.tid, k, t.bbox, c.frame_ts)
             c.kpts[t.tid], c.posture[t.tid] = k, psm.sm[t.tid]['state']
             if not m['moved']:
-                continue  # 家具化: 没动过就不具备跌倒/久卧告警资格
+                continue  # 家具化: 没动过就不具备跌倒/久卧告警资格, 也不喂骨架分类器
+            c.centers[t.tid] = t.center()
+            if fall_clf:
+                probs[t.tid] = fall_clf.update(t.tid, c.frame_ts, k)
             if evt == 'fall':
-                c.fall_ts[t.tid] = time.time()
-                signal('fall', 'CRITICAL', '判断有人跌倒（#%d），已抓拍并录像。' % t.tid,
-                       subject=t.tid, pt=t.center())
+                if fusion:
+                    fall_verdicts(fusion.rule_fired(t.tid, c.frame_ts))
+                else:
+                    c.fall_ts[t.tid] = time.time()
+                    signal('fall', 'CRITICAL', '判断有人跌倒（#%d），已抓拍并录像。' % t.tid,
+                           subject=t.tid, pt=t.center())
             elif evt == 'lying_long' and not in_rest(t.center()):
                 # 在床、沙发等休息区躺着不算倒地久卧；那里的异常交给突发不适多信号判断
                 signal('lying_long', 'CRITICAL', '有人倒地超过 %g 秒未起身（#%d），请查看。'
                        % (FALL_CFG['lying_min_secs'], t.tid), subject=t.tid, pt=t.center())
+        if fusion:
+            fall_verdicts(fusion.step(c.frame_ts, probs, c.posture))
         for tid in list(psm.sm):
             if tid not in tracker.tracks:
                 psm.sm.pop(tid)
         for tid in list(mobile_seen):
             if tid not in tracker.tracks:
                 mobile_seen.pop(tid)
+        if fall_clf:
+            alive = set(tracker.tracks)
+            fall_clf.forget(alive)
+            fusion.forget(alive)
+            for tid in list(c.centers):
+                if tid not in alive and tid not in fusion.pending:
+                    c.centers.pop(tid)
+        else:
+            c.centers = {tid: p for tid, p in c.centers.items() if tid in tracker.tracks}
+
+    def t_fall_pending(c):
+        """规则报了跌倒但人随后从画面里消失：等待时间到了也要给出结论"""
+        fall_verdicts(fusion.step(time.time(), {}, {}))
+
+    def t_routine(c):
+        with person_log._lock:
+            stats = dict(person_log.stats)
+        for lvl, et, text in routine.check(stats, time.time(), c.person_seen_ts):
+            signal(et, lvl, text)
 
     def t_fire(c):
         frame, ts, _ = svc['frames'].latest()
@@ -523,6 +577,12 @@ def main():
     if child:
         R.append(Task('child', t_child, None, 3, 'cpu', 'detect',
                       when=lambda c: bool(c.persons) and c.zones_valid))
+    if fusion:
+        R.append(Task('fall_pending', t_fall_pending, 1, 1, 'cpu',
+                      when=lambda c: bool(fusion.pending) and not c.persons,
+                      desc='跌倒待定的人离开画面后照样给出结论'))
+    if routine:
+        R.append(Task('routine', t_routine, 600, 7, 'cpu', desc='作息偏离：起床晚、活动少、夜里多动'))
     if ptz.enabled:
         R.append(Task('ptz_return', t_ptz_return, 5, 9, 'io', desc='目标离开后云台复位'))
     for t in R:
@@ -547,8 +607,9 @@ def main():
 
     enabled = [t.name for t in sched.tasks]
     print('[butler] 值班表：%s' % enabled)
-    print('[butler] 能力：姿态=%s 火焰=%s 声音=%s 儿童=%s 存证=%s 云台跟踪=%s 跟踪器=%s 区域=%s'
-          % (bool(pose_model), bool(fire), bool(svc['audio']), bool(child), bool(clips),
+    print('[butler] 能力：姿态=%s 跌倒模型=%s 作息=%s 火焰=%s 声音=%s 儿童=%s 存证=%s 云台跟踪=%s 跟踪器=%s 区域=%s'
+          % (bool(pose_model), fusion.mode if fusion else False, bool(routine),
+             bool(fire), bool(svc['audio']), bool(child), bool(clips),
              ptz.enabled, type(tracker).__name__, [k for k, v in zones.items() if v]))
     butler.notify('INFO', '%s上线，当前模式：%s。有事我叫你。' % (butler.name, MODE_CN[butler.mode]),
                   cooldown=0)

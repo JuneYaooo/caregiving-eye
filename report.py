@@ -8,6 +8,7 @@ import numpy as np
 import cv2
 from common_config import cfg
 from abilities.pet import summarize
+from abilities.routine import RoutineMonitor
 
 EVENTS_DIR = cfg('EVENTS_DIR', 'events')
 
@@ -18,6 +19,8 @@ TYPE_CN = {
     'night_wander': '夜间离床', 'child_danger': '儿童危险', 'child_danger_watched': '儿童靠近危险区',
     'child_alone': '儿童独处', 'baby_cry': '婴儿哭声', 'cat_zone': '宠物进禁区',
     'pet_distress': '宠物嘶叫', 'pet_unseen': '宠物久未出现', 'mode_change': '模式切换',
+    'fall_suspect': '疑似跌倒', 'routine_late': '起床偏晚', 'routine_low': '活动偏少',
+    'routine_night': '夜间活动偏多',
 }
 
 
@@ -98,6 +101,10 @@ def daily_report(day=None, events_dir=None):
         lines += summarize(stats, label)
         if stats and max(stats.get('hourly_active') or [0]) > 0:
             lines.append('  24 小时活跃度：`%s`' % _hour_bar(stats['hourly_active']))
+        if kind == 'person':
+            r = RoutineMonitor.from_env(ev_dir, cfg)
+            if r:
+                lines += ['  ' + x for x in r.summary(stats, day)]
         img = render_heatmap(grid, base, os.path.join(ev_dir, 'report_heatmap_%s_%s.png'
                                                       % (kind, day)))
         if img:

@@ -23,3 +23,6 @@ go2rtc.yaml
 zones.json
 __pycache__/
 *.pyc
+
+# ===== 跌倒模型训练数据（自行下载，不提交）=====
+data/

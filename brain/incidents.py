@@ -22,10 +22,13 @@ FAMILY = {
     'baby_cry': 'baby', 'night_wander': 'night',
     'cat_zone': 'pet_zone', 'pet_distress': 'pet', 'pet_unseen': 'pet',
     'absence': 'absence', 'stream_down': 'system',
+    'fall_suspect': 'person_down',
+    'routine_late': 'routine', 'routine_low': 'routine', 'routine_night': 'routine',
 }
 NEVER_DOWNGRADE = {'fire', 'fire_alarm_sound'}
 FAMILY_CN = {'person_down': '有人倒地 / 不适', 'fire': '火情', 'security': '安全',
-             'child': '儿童安全', 'pet_zone': '宠物禁区', 'pet': '宠物', 'system': '系统'}
+             'child': '儿童安全', 'pet_zone': '宠物禁区', 'pet': '宠物', 'system': '系统',
+             'routine': '作息'}
 
 
 class Incident:

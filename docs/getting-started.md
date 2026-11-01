@@ -31,6 +31,7 @@ Copy-Item .env.example .env
 | --- | --- |
 | [yolov8n.onnx](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.onnx) | 必需，人 / 猫 / 狗检测 |
 | [yolov8n-pose.onnx](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n-pose.onnx) | v2 姿态原型使用；跌倒、突发不适、儿童判定都依赖它，缺失时回退到检测框比例规则 |
+| `fall_stgcn.onnx`（可选，本机训练） | 骨架时序跌倒分类，和姿态规则并联研判；训练步骤见 [算法设计](./algorithms.md#训练约-40-分钟cpu-即可)，没有时只用姿态规则 |
 
 模型不随仓库分发。当前推理默认使用 ONNX Runtime 的 CPU 执行器，不要求 NVIDIA 显卡。
 
@@ -192,6 +193,7 @@ v2 接入 `Butler` 模式引擎、IoU 跟踪、姿态与区域规则。常见配
 | 突发不适（多信号） | | ✓ | | ✓ |
 | 儿童危险 | ✓ | ✓ | ✓ | ✓ |
 | 卫生间久滞 | ✓ | ✓ | ✓ | ✓ |
+| 作息偏离 | ✓ | ✓ | ✓ | ✓ |
 | 夜间离开卧室 | | | | ✓ |
 | 婴儿哭声 | ✓ | ✓ | ✓ | ✓ |
 | 宠物禁区 | ✓ | ✓ | ✓ | ✓ |
@@ -261,6 +263,8 @@ python report.py 20261031
 | ONVIF 地址能访问但流名不对 | `-camera` 显式指定 `living`；省略流名时上游可能默认寻找 `living_4k` |
 | 无法弹出预览窗口 | 默认安装的是 headless OpenCV，启动时使用 `--no-display` |
 | 跌倒或区域事件不准确 | 先检查检测框、遮挡与区域标定，再调 `FALL_CFG`；这些规则仍是原型 |
+| “疑似跌倒”太多或漏报 | 用 `python scripts/fall_gcn/try_video.py 录像.mp4` 看模型打分；误报多就调高 `FALL_GCN_TH` / `FALL_GCN_STRONG`，宁可误报不能漏报就设 `FALL_FUSION=either` |
+| 作息提醒不准 | 前 7 天不会提醒；按家人习惯调 `ROUTINE_LATE_MIN`、`ROUTINE_LOW_RATIO`，或 `ROUTINE_ENABLE=0` 关闭 |
 | 火焰烟雾误报 | 阳光、红色物体、灯光都可能误检；提高 `FIRE_SCORE`，或避开窗户直射画面 |
 | 声音事件没反应 | `ffmpeg` 是否在 PATH；状态行的 `audio=` 分贝是否变化；go2rtc 流是否带音频 |
 | 儿童判定不准 | 先填 `CHILD_HEIGHT_BAND`，调 `CHILD_LEG_RATIO`；侧身、坐着时不参与判定 |

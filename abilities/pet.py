@@ -5,6 +5,7 @@
   events/activity_<kind>_YYYYMMDD.json   统计数据
   events/heatmap_<kind>_YYYYMMDD.npy     26×15 网格累计
   events/base_YYYYMMDD.jpg               当天底图（热力图叠加用）
+morning_first 记录当天 morning_from 点以后第一次走动的时间，作息对比用。
 程序重启后会读回当天已有数据继续累计。
 """
 import copy, json, os, threading, time
@@ -15,11 +16,12 @@ GRID = (15, 26)   # 行 × 列
 
 class ActivityLog:
     def __init__(self, kind, out_dir, zone_keys=('pet_zones', 'cat_zones'),
-                 move_th=0.008, unseen_hours=0):
+                 move_th=0.008, unseen_hours=0, morning_from=4):
         self.kind, self.out_dir = kind, out_dir
         self.zone_keys = zone_keys
         self.move_th = move_th            # 每次采样位移 / 画面宽 超过它算“活跃”
         self.unseen_hours = unseen_hours  # >0 时在久未出现时提醒
+        self.morning_from = morning_from
         self.day = None
         self.tracks = {}                  # tid -> {'c', 'ts', 'zones'}
         self._lock = threading.RLock()    # update 在主循环，save 在 io 线程
@@ -34,7 +36,7 @@ class ActivityLog:
         self.stats = {'day': day, 'kind': self.kind, 'sightings': 0, 'active_sec': 0.0,
                       'still_sec': 0.0, 'distance': 0.0, 'hourly_active': [0.0] * 24,
                       'hourly_seen': [0.0] * 24, 'zones': {}, 'first_seen': None,
-                      'last_seen': None, 'longest_still_sec': 0.0}
+                      'last_seen': None, 'morning_first': None, 'longest_still_sec': 0.0}
         self.grid = np.zeros(GRID, np.int32)
         jp, hp = self._paths(day)
         if os.path.exists(jp):
@@ -76,6 +78,8 @@ class ActivityLog:
                 self.stats['hourly_active'][hour] += dt
                 self.stats['distance'] += d
                 prev['still'] = 0.0
+                if hour >= self.morning_from and not self.stats.get('morning_first'):
+                    self.stats['morning_first'] = time.strftime('%H:%M', time.localtime(now))
             else:
                 self.stats['still_sec'] += dt
                 prev['still'] += dt

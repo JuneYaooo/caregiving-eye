@@ -1,0 +1,7 @@
+# 只在训练跌倒分类器时需要；执事运行时只用 onnxruntime
+torch>=2.1
+onnx
+onnxscript
+opencv-python-headless>=4.8
+onnxruntime>=1.16
+numpy

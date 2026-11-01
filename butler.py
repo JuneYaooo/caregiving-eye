@@ -25,7 +25,8 @@ DEFAULT_COOLDOWN = {
     'glass_break': 60, 'absence': 1800,
     # 在家照护
     'fall': 60, 'lying_long': 300, 'illness': 300, 'inactive': 1800,
-    'zone_dwell': 300, 'night_wander': 300,
+    'zone_dwell': 300, 'night_wander': 300, 'fall_suspect': 60,
+    'routine_late': 6 * 3600, 'routine_low': 6 * 3600, 'routine_night': 6 * 3600,
     'child_danger': 60, 'child_danger_watched': 300, 'child_alone': 900, 'baby_cry': 300,
     # 宠物
     'cat_zone': 120, 'pet_distress': 300, 'pet_unseen': 3600,
