@@ -6,11 +6,11 @@
 
 用法:
   show
-  add-object  --name 石膏像 --roi 0.05,0.2,0.25,0.8 [--note ...]     静物区，roi 为 0~1 相对坐标
+  add-object  --name 雕像 --roi 0.05,0.2,0.25,0.8 [--note ...]     静物区，roi 为 0~1 相对坐标
   add-lighting --time 15:00-16:30 [--roi ...] --note '阳光照到餐桌'
   add-fact    '大门不在画面里，有人回来时先出现在画面右侧' [--topic camera|routine|other]
   set         camera.covers_door false | routine.wake 06:30 | routine.sleep 22:00
-  remove      --name 石膏像 | --fact 2 | --lighting 0
+  remove      --name 雕像 | --fact 2 | --lighting 0
   公共参数：--events-dir events  --by owner|ai（默认 owner；AI 代为修改时写 ai，并且要先征得主人同意）
 """
 import argparse, json, os, sys, time

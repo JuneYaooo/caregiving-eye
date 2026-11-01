@@ -1,6 +1,6 @@
 ---
 name: home-review
-description: 回顾米执事（caregiving-eye / mibutler）家庭看护摄像头记录下的事情，按问题类型挑最省事的方法回答。用户问“今天家里发生了什么”“下午有人来过吗”“那条跌倒提醒是真的吗”“桌上的袋子什么时候放的”“谁动了冰箱”“妈今天起床/活动正常吗”“现在家里怎么样”“为什么没报/老误报”，或者想复盘某个时段、核实某条提醒、找出画面在哪里变了、在录像里定位某个时刻时，都应使用本 skill。只要问题和这个仓库的 events/ 记录、快照、录像、提醒有关，哪怕用户没说“回顾”也要用。
+description: 回顾米执事（caregiving-eye / mibutler）家庭看护摄像头记录下的事情，按问题类型挑最省事的方法回答。用户问“今天家里发生了什么”“下午有人来过吗”“那条跌倒提醒是真的吗”“桌上的东西什么时候被动过”“谁动了冰箱”“老人今天起床/活动正常吗”“现在家里怎么样”“为什么没报/老误报”，或者想复盘某个时段、核实某条提醒、找出画面在哪里变了、在录像里定位某个时刻时，都应使用本 skill。只要问题和这个仓库的 events/ 记录、快照、录像、提醒有关，哪怕用户没说“回顾”也要用。
 ---
 
 # 家庭记录回顾
@@ -40,7 +40,7 @@ python .claude/skills/home-review/scripts/scene_diff.py bisect --video rec.mp4 -
 ```bash
 # 家庭知识（执事会用其中的静物区，改完一分钟内生效）
 python .claude/skills/home-review/scripts/household.py --events-dir events show
-python .claude/skills/home-review/scripts/household.py --events-dir events add-object --name 石膏像 --roi 0.05,0.2,0.25,0.8 [--by ai]
+python .claude/skills/home-review/scripts/household.py --events-dir events add-object --name 雕像 --roi 0.05,0.2,0.25,0.8 [--by ai]
 
 # 每周复盘：哪里老误报、哪些没人确认、漏报了什么 → 调整建议（只建议，不改动）
 python .claude/skills/home-review/scripts/weekly_review.py --events-dir events [--days 7]
@@ -54,8 +54,8 @@ python .claude/skills/home-review/scripts/weekly_review.py --events-dir events [
 |---|---|---|
 | **总览**：“今天发生了什么”“有没有事” | `day_digest.py` → 按性质分组讲；只有**未确认的急报/值守**才去看快照核实 | 翻所有图片 |
 | **核实一条提醒**：“那个跌倒是真的吗” | 时间线里找到它 → 看快照（Read 图片）→ 看不清再从录像抽 3~5 帧 → 给出判断，并告诉用户怎么回复执事 | 全天扫描 |
-| **东西变了**：“袋子什么时候放的”“谁动了 X” | 见下方“由粗到细找变化” | 逐张看图 |
-| **作息/活动**：“妈起床了吗”“今天活动多吗” | 读 `activity_person_*.json`：`morning_first`、`hourly_active`、区域停留 | 任何图片 |
+| **东西变了**：“东西什么时候被动过”“谁动了 X” | 见下方“由粗到细找变化” | 逐张看图 |
+| **作息/活动**：“老人起床了吗”“今天活动多吗” | 读 `activity_person_*.json`：`morning_first`、`hourly_active`、区域停留 | 任何图片 |
 | **某个时刻**：“下午 3 点家里怎样” | 找最近的快照或进出记录；没有就直说当时没有画面留存，并提示去米家 App 回放 | 拿相邻图片去推测 |
 | **现在**：“现在家里怎么样” | `python main.py cmd 状态`，再 `python main.py cmd 看看`（立即抓拍）后看图 | 读历史记录 |
 | **复盘 / 调优**：“这周怎么样”“怎么让它更准” | `weekly_review.py` → 逐条讲建议，主人同意后再执行（见“越用越准”） | 自作主张改配置 |
@@ -68,7 +68,7 @@ python .claude/skills/home-review/scripts/weekly_review.py --events-dir events [
 1. **粗：缩小时间。** 从时间线的进出记录和事件，以及活动统计里有活动的小时，列出候选时段。
 2. **中：确认变了什么。** 用候选时段前后的空房间画面（`base_` 底图，或进出快照中没人的那张）做 `compare`，加 `--roi` 只看目标区域。只信 `changed: true`；`lighting: true` 表示是光照或镜头切换，不算。
 3. **细：定位时刻。** 有录像（事件短录像，或用户从 SD 卡导出的文件）时，先 `scan --step 600` 找出变化发生在哪个 10 分钟区间，再在该区间 `bisect`，比较次数约为 log2(秒数)。
-4. **讲出能确定到什么程度。** 没有录像就只能给范围，比如“10:29 的快照里还没有，15:44 的快照里已经有了”，不要编一个精确时刻。
+4. **讲出能确定到什么程度。** 没有录像就只能给范围，比如“09:30 的快照里还没有，14:20 的快照里已经有了”，不要编一个精确时刻。
 
 二分的前提是变化**发生后一直保持**。东西放下又拿走、目标区域一直有人挡着，二分都会给错答案。这时改用 `scan` 缩小步长逐段看，并把这个限制告诉用户。各算法的细节和坑见 `references/methods.md`。
 
@@ -83,16 +83,16 @@ python .claude/skills/home-review/scripts/weekly_review.py --events-dir events [
 
 纠正如果只说在对话里就丢了，要写回系统，下次执事和 AI 才会更准。
 
-**回答前**先 `household.py show`。里面记着这个家的固定情况，比如“画面左侧是石膏像”“大门不在画面里”“下午三点阳光照到餐桌”。用它来解释提醒，不要再把已知的静物说成人。
+**回答前**先 `household.py show`。里面记着这个家的固定情况，比如“画面左侧是雕像”“大门不在画面里”“下午三点阳光照到餐桌”。用它来解释提醒，不要再把已知的静物说成人。
 
 **主人纠正或确认时**，当场写回：
 
 | 主人说 | 执行 |
 |---|---|
-| “10:29 那条是误报” | `python main.py cmd 没事 10:29`（执事没在跑时会直接写文件，下次启动生效） |
-| “那次是真摔了” | `python main.py cmd 属实 15:44` |
+| “09:30 那条是误报” | `python main.py cmd 没事 09:30`（执事没在跑时会直接写文件，下次启动生效） |
+| “那次是真摔了” | `python main.py cmd 属实 14:20` |
 | “下午三点有人来你没报” | `python main.py cmd 漏报 15:00 有人进来没报` |
-| “那是个石膏像” | `household.py add-object --name 石膏像 --roi …`（roi 从快照上估） |
+| “那是个雕像” | `household.py add-object --name 雕像 --roi …`（roi 从快照上估） |
 | “门口拍不到” / “她一般六点半起” | `household.py set camera.covers_door false`、`household.py set routine.wake 06:30` |
 | 其他值得记住的情况 | `household.py add-fact '…'` |
 
@@ -105,12 +105,12 @@ python .claude/skills/home-review/scripts/weekly_review.py --events-dir events [
 用中文，先给结论，再给依据：
 
 ```
-今天没有真事：3 条急报都是同一个位置的静物误报（已看快照确认）；有 1 人 10:12 回来、10:40 离开。
+今天没有真事：3 条急报都是同一个位置的静物误报（已看快照确认）；有 1 人 08:50 回来、09:15 离开。
 
 | 时间 | 发生了什么 | 性质 | 依据 |
 |---|---|---|---|
-| 10:12–10:40 | 1 人在客厅、餐桌活动 | 正常 | 进出快照 snap_arrival_…jpg |
-| 10:29 | “有人倒地”急报 ×3 | 误报：快照里是石膏像 | snap_lying_long_…jpg |
+| 08:50–09:15 | 1 人在客厅、餐桌活动 | 正常 | 进出快照 snap_arrival_…jpg |
+| 09:30 | “有人倒地”急报 ×3 | 误报：快照里是雕像 | snap_lying_long_…jpg |
 | 14:00–14:30 | 画面中断 | 这段时间无记录 | stream_down |
 
 需要你做的：给误报那条回复“没事”，执事会学习这个位置。
@@ -120,4 +120,6 @@ python .claude/skills/home-review/scripts/weekly_review.py --events-dir events [
 
 ## 隐私
 
-快照和录像拍的是家里和家人。看图在本机进行。**未经用户同意，不要把图片、录像或文字记录发给任何外部服务**，也不要贴进 Issue 或公开渠道。回答里引用文件名即可，不需要复述画面中和问题无关的细节。
+快照和录像拍的是家里和家人。看图在本机进行。
+
+`events/` 下的一切（household.json、labels.jsonl、快照、录像、统计）只存在本机，已被 Git 忽略，提交前检查也会拦下。这个仓库是**公开的**：改代码、写文档、写测试、写提交说明或 Issue 时，**不要用这个家的真实情况做例子**，比如家里有什么摆件、真实的提醒时刻、目标编号、家人称呼、作息。一律换成通用示例（雕像、09:30、#7、老人）。**未经用户同意，不要把图片、录像或文字记录发给任何外部服务**，也不要贴进 Issue 或公开渠道。回答里引用文件名即可，不需要复述画面中和问题无关的细节。

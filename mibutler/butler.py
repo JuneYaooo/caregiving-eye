@@ -213,7 +213,7 @@ class Butler:
     def handle_command(self, text):
         """返回执事的回应文本; None=非指令"""
         t = (text or '').strip()
-        # 事后补标 / 漏报：“没事 10:29”“属实 #152”“漏报 15:00 有人进来没报”
+        # 事后补标 / 漏报：“没事 09:30”“属实 #7”“漏报 15:00 有人进来没报”
         from mibutler.brain import learning
         if learning.parse_label_command(t):
             return learning.apply_label_command(os.path.dirname(self.events_path), t, manager=self.incidents)

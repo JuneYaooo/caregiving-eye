@@ -36,10 +36,10 @@ def test_retro_false_labels_feed_downgrade_and_samples(tmp_path):
     ev = str(tmp_path)
     os.makedirs(os.path.join(ev, 'samples'))
     json.dump({'incident': 'a1', 'label': None}, open(os.path.join(ev, 'samples', 'fall_x_a1.json'), 'w'))
-    for i, hm in enumerate(('10:29', '11:40', '15:44')):
+    for i, hm in enumerate(('09:30', '10:40', '14:20')):
         closed(ev, hm, 'a%d' % (i + 1))
     b, m = manager(ev)
-    for hm in ('10:29', '11:40', '15:44'):              # 主人事后补标三次（通过指令入口的同一路径）
+    for hm in ('09:30', '10:40', '14:20'):              # 主人事后补标三次（通过指令入口的同一路径）
         r = b.handle_command('没事 %s' % hm)
         assert '误报' in r, r
     assert json.load(open(os.path.join(ev, 'samples', 'fall_x_a1.json')))['label'] == 0
@@ -54,11 +54,11 @@ def test_retro_false_labels_feed_downgrade_and_samples(tmp_path):
 
 def test_relabel_true_revokes_false(tmp_path):
     ev = str(tmp_path)
-    closed(ev, '10:29', 'a1')
+    closed(ev, '09:30', 'a1')
     b, m = manager(ev)
-    b.handle_command('没事 10:29')
+    b.handle_command('没事 09:30')
     assert len(m.feedback) == 1
-    r = b.handle_command('属实 10:29')
+    r = b.handle_command('属实 09:30')
     assert '属实' in r and not m.feedback
     assert not learning.read_jsonl(os.path.join(ev, 'feedback.jsonl'))
 
@@ -86,7 +86,7 @@ def test_missed_and_offline_write(tmp_path):
 def test_household_static_object_blocks_statue_immediately(tmp_path):
     ev = str(tmp_path)
     import household as hh
-    hh.main(['--events-dir', ev, 'add-object', '--name', '石膏像', '--roi', '0.55,0.3,0.7,0.8'])
+    hh.main(['--events-dir', ev, 'add-object', '--name', '雕像', '--roi', '0.55,0.3,0.7,0.8'])
     H = learning.Household(os.path.join(ev, 'household.json'))
     gate, tr = PersonGate(MobilityFilter()), SimpleTracker()
     W, Hh = 1920, 1080
@@ -115,7 +115,7 @@ def test_household_static_object_blocks_statue_immediately(tmp_path):
 
 def test_weekly_review_suggests_static_and_unlabeled(tmp_path):
     ev = str(tmp_path)
-    for i, hm in enumerate(('10:29', '11:40', '12:10')):
+    for i, hm in enumerate(('09:30', '10:40', '11:10')):
         closed(ev, hm, 'f%d' % i, cells=('c1_2',), acked='false')
     for i, hm in enumerate(('16:00', '16:20', '16:40')):
         closed(ev, hm, 'u%d' % i, types=('intrusion',), cells=('c5_3',), family='security')
@@ -131,11 +131,11 @@ def test_weekly_review_suggests_static_and_unlabeled(tmp_path):
 
 def test_day_digest_uses_retro_labels(tmp_path):
     ev = str(tmp_path)
-    closed(ev, '10:29', 'a1')
+    closed(ev, '09:30', 'a1')
     with open(os.path.join(ev, 'alerts.jsonl'), 'w', encoding='utf-8') as f:
-        f.write(json.dumps({'ts': '%s 10:29:30' % DAY, 'level': 'CRITICAL', 'type': 'lying_long',
+        f.write(json.dumps({'ts': '%s 09:30:30' % DAY, 'level': 'CRITICAL', 'type': 'lying_long',
                             'text': '〔急报〕 有人倒地'}, ensure_ascii=False) + '\n')
-    learning.label(ev, '10:29', 'false')
+    learning.label(ev, '09:30', 'false')
     learning.missed(ev, '15:00', '有人进来没报')
     import day_digest as dd
     d = dd.digest(ev, DAY.replace('-', ''))

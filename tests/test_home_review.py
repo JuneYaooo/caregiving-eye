@@ -20,7 +20,7 @@ def room(bright=1.0, bag=False, person_x=None, seed=0):
     for j in range(300, 540, 40):
         cv2.line(img, (0, j), (960, j), (100, 100, 100), 2)
     cv2.rectangle(img, (530, 300), (820, 460), (90, 60, 40), -1)      # 桌子
-    cv2.rectangle(img, (100, 120), (220, 420), (230, 230, 230), -1)   # 石膏像
+    cv2.rectangle(img, (100, 120), (220, 420), (230, 230, 230), -1)   # 雕像
     cv2.circle(img, (160, 110), 40, (230, 230, 230), -1)
     if bag:
         cv2.rectangle(img, (650, 330), (740, 420), (250, 250, 250), -1)
@@ -82,26 +82,26 @@ def test_day_digest_merges_and_labels(tmp_path):
     day = '2026-11-01'
     alerts = [
         {'ts': day + ' 00:03:00', 'level': 'INFO', 'type': 'mode_change', 'text': '〔执事〕 切换到夜间加强（按日程）。'},
-        {'ts': day + ' 10:12:00', 'level': 'INFO', 'type': 'arrival', 'text': '〔执事〕 有人回来了，当前在家 1 人。',
-         'snapshot': 'events/snap_arrival_20261101_101200.jpg'},
+        {'ts': day + ' 08:50:00', 'level': 'INFO', 'type': 'arrival', 'text': '〔执事〕 有人回来了，当前在家 1 人。',
+         'snapshot': 'events/snap_arrival_20261101_085000.jpg'},
     ] + [
-        {'ts': day + ' 10:%02d:00' % m, 'level': 'CRITICAL', 'type': 'lying_long',
-         'text': '〔急报〕 有人倒地超过 30 秒未起身（#5），请查看。', 'snapshot': 'events/snap_lying_long_20261101_10%02d00.jpg' % m}
-        for m in (29, 33, 39)
+        {'ts': day + ' 09:%02d:00' % m, 'level': 'CRITICAL', 'type': 'lying_long',
+         'text': '〔急报〕 有人倒地超过 30 秒未起身（#5），请查看。', 'snapshot': 'events/snap_lying_long_20261101_09%02d00.jpg' % m}
+        for m in (30, 34, 40)
     ] + [
-        {'ts': day + ' 10:41:00', 'level': 'INFO', 'type': 'departure', 'text': '〔执事〕 人都出门了，约 9 分钟后进入无人值守。'},
-        {'ts': day + ' 10:45:00', 'level': 'INFO', 'type': 'incident_close', 'text': '〔执事〕 收尾'},
-        {'ts': day + ' 15:44:00', 'level': 'CRITICAL', 'type': 'lying_long', 'text': '〔急报〕 有人倒地超过 30 秒未起身（#152），请查看。'},
+        {'ts': day + ' 09:42:00', 'level': 'INFO', 'type': 'departure', 'text': '〔执事〕 人都出门了，约 9 分钟后进入无人值守。'},
+        {'ts': day + ' 09:46:00', 'level': 'INFO', 'type': 'incident_close', 'text': '〔执事〕 收尾'},
+        {'ts': day + ' 14:20:00', 'level': 'CRITICAL', 'type': 'lying_long', 'text': '〔急报〕 有人倒地超过 30 秒未起身（#7），请查看。'},
         {'ts': '2026-10-31 23:00:00', 'level': 'CRITICAL', 'type': 'fall', 'text': '昨天的'},
     ]
     _write(ev / 'alerts.jsonl', alerts)
     _write(ev / 'incidents.jsonl', [
-        {'id': 'a', 'family': 'person_down', 'types': ['lying_long'], 'opened': day + ' 10:29:00',
+        {'id': 'a', 'family': 'person_down', 'types': ['lying_long'], 'opened': day + ' 09:30:00',
          'duration_sec': 700, 'acked': 'false'},
     ])
     d = dd.digest(str(ev), '20261101')
     ev_rows = [r for r in d['timeline'] if r['kind'] == 'event']
-    assert len(ev_rows) == 2, ev_rows                     # 10:29/33/39 合并成一行；15:44 单独一行
+    assert len(ev_rows) == 2, ev_rows                     # 09:30/34/40 合并成一行；14:20 单独一行
     assert ev_rows[0]['count'] == 3 and ev_rows[0]['verdict'] == '主人确认误报'
     assert ev_rows[1]['verdict'] == '未确认'
     assert d['counts']['presence'] == 2
@@ -109,5 +109,5 @@ def test_day_digest_merges_and_labels(tmp_path):
     assert '昨天的' not in json.dumps(d, ensure_ascii=False)
     text = dd.to_text(d)
     assert '共 3 条' in text and '主人确认误报' in text
-    w = dd.digest(str(ev), '20261101', '15:00', '18:00')
+    w = dd.digest(str(ev), '20261101', '14:00', '18:00')
     assert len(w['timeline']) == 1

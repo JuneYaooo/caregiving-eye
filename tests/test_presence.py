@@ -14,7 +14,7 @@ from mibutler.vision.tracker import SimpleTracker
 from mibutler.butler import Butler, AWAY, HOME
 
 W, H = 1920, 1080
-KPTS = [[0, 0, 0.9]] * 17          # “可信”的关键点（石膏像也能骗过这一关）
+KPTS = [[0, 0, 0.9]] * 17          # “可信”的关键点（雕像也能骗过这一关）
 
 
 def box(cx, cy, w=200, h=400):

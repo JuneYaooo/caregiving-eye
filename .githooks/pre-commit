@@ -1,0 +1,5 @@
+#!/bin/sh
+# 提交前隐私检查（启用：git config core.hooksPath .githooks）
+PY=$(command -v python3 || command -v python || command -v py)
+[ -z "$PY" ] && { echo "pre-commit: 找不到 Python，跳过隐私检查"; exit 0; }
+exec "$PY" "$(git rev-parse --show-toplevel)/scripts/privacy_check.py"

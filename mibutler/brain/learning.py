@@ -50,7 +50,7 @@ TIME_RE = re.compile(r'^(?:(\d{4}-?\d{2}-?\d{2})\s+)?(\d{1,2})[:：](\d{2})$')
 
 
 def parse_ref(ref):
-    """'10:29' / '2026-11-01 10:29' → ('time', 'YYYY-MM-DD', 'HH:MM')；'#152' → ('subject', 152)；
+    """'09:30' / '2026-01-01 09:30' → ('time', 'YYYY-MM-DD', 'HH:MM')；'#7' → ('subject', 7)；
     其他（如 '102900-3'）→ ('id', ref)"""
     ref = (ref or '').strip()
     m = TIME_RE.match(ref)
@@ -120,7 +120,7 @@ def label(events_dir, ref, kind, manager=None, note='', by='owner', now=None):
     # 2. 已结案的
     hits = find_closed(events_dir, r)
     if not hits:
-        return 0, '没找到 %s 对应的事件。可以说时间（如 10:29）、目标编号（如 #152）或事件编号。' % ref
+        return 0, '没找到 %s 对应的事件。可以说时间（如 09:30）、目标编号（如 #7）或事件编号。' % ref
     if r[0] != 'time':
         hits = hits[-1:]                # 编号可能跨天重复，只取最近一次
     fb_path = os.path.join(events_dir, 'feedback.jsonl')
@@ -161,7 +161,7 @@ LABEL_CMD = re.compile(r'^(没事|误报|虚惊|属实|真的|漏报)\s*(.+)$')
 
 
 def parse_label_command(text):
-    """'没事 10:29' / '属实 #152' / '漏报 15:00 有人进来没报' → (kind, ref, note)；不是补标指令返回 None"""
+    """'没事 09:30' / '属实 #7' / '漏报 15:00 有人进来没报' → (kind, ref, note)；不是补标指令返回 None"""
     m = LABEL_CMD.match((text or '').strip())
     if not m:
         return None

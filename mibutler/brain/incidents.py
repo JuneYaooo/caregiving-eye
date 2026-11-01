@@ -180,7 +180,7 @@ class IncidentManager:
         return len(targets)
 
     def ack_matching(self, pred, kind):
-        """按条件确认进行中的事件（事后补标“没事 10:29”时用）；返回处理了几个"""
+        """按条件确认进行中的事件（事后补标“没事 09:30”时用）；返回处理了几个"""
         now = time.time()
         with self._lock:
             targets = [i for i in self.open.values() if pred(i)]

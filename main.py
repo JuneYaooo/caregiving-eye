@@ -15,7 +15,7 @@
 
   日常
     python main.py cmd 没事                 把一条指令发给正在运行的执事
-    python main.py cmd 没事 10:29           事后补标：那条是误报（属实 / 漏报 15:00 描述 同理）
+    python main.py cmd 没事 09:30           事后补标：那条是误报（属实 / 漏报 15:00 描述 同理）
     python main.py report [YYYYMMDD]        生成日报
 """
 import argparse, os, sys, time
