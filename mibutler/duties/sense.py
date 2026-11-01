@@ -62,7 +62,8 @@ def detect(app, c):
     c.tracks = app.tracker.update(dets, ts)
     c.persons = [t for t in c.tracks if t.cls == PERSON]
     c.pets = [t for t in c.tracks if t.cls in (CAT, DOG)]
-    c.mode = app.butler.update_presence(bool(c.persons), only_pets=bool(c.pets) and not c.persons)
+    c.mode = app.butler.update_presence(bool(c.persons), only_pets=bool(c.pets) and not c.persons,
+                                           count=len(c.persons))
     if c.persons:
         c.last_person_ts = c.person_seen_ts = ts
     c.det_seq += 1

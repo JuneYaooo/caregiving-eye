@@ -45,6 +45,7 @@ class Butler:
         self.muted_until = 0             # 静音 (仅压制非 CRITICAL)
         self.last_sent = {}              # event_type -> ts
         self.person_since = None         # 有人出现的起始时间
+        self.away_after_sec = float(cfg('AWAY_DELAY_SEC', 600))  # 无人多久进入 AWAY
         self.person_absent_since = None
         self.schedule = self._parse_schedule(cfg('MODE_SCHEDULE', ''))
         self._lock = threading.Lock()    # 多个线程可能同时通报
@@ -91,16 +92,28 @@ class Butler:
                 return mode
         return None
 
-    def update_presence(self, person_present, only_pets=False, now=None):
-        """感知层每帧调用: 依据在场情况自动切模式 (带迟滞)"""
+    def update_presence(self, person_present, only_pets=False, count=0, now=None):
+        """感知层每帧调用: 依据在场情况自动切模式 (带迟滞) + 进出事件"""
         now = now or time.time()
         # 先记录在场 / 离场时间，指令和日程生效期间也要记，否则结束后无法判断离家多久
         if person_present:
+            first_back = self.person_since is None and self.person_absent_since is not None
+            gap = (now - self.person_absent_since) if self.person_absent_since else 0
             self.person_since = self.person_since or now
             self.person_absent_since = None
+            # 进出事件: 空置超过60秒后有人出现 → 有人回来了 (无人值守模式交给入侵告警)
+            if first_back and gap > 60 and self.mode != AWAY:
+                self.notify('INFO', '有人回来了，当前在家 %d 人。' % max(count, 1),
+                            event_type='arrival', cooldown=0)
         else:
+            just_left = self.person_since is not None
+            spell = (now - self.person_since) if self.person_since else 0
             self.person_absent_since = self.person_absent_since or now
             self.person_since = None
+            # 进出事件: 在场持续超过2分钟后人全离开 → 通报离家
+            if just_left and spell > 120:
+                self.notify('INFO', '人都出门了，%g 分钟后进入无人值守。'
+                            % (self.away_after_sec / 60), event_type='departure')
         if now < self.manual_until:
             return self.mode
         sched = self._scheduled_mode(now)
@@ -115,11 +128,11 @@ class Butler:
             # 在家超过迟滞期 → HOME
             if now - self.person_since > 120 and self.mode in (AWAY, PET):
                 self.set_mode(HOME, '%s出现超过2分钟' % self.owner)
-        elif now - self.person_absent_since > 600:
+        elif now - self.person_absent_since > self.away_after_sec:
             if only_pets and self.mode != PET:
                 self.set_mode(PET, '家中只剩宠物')
             elif not only_pets and self.mode != AWAY:
-                self.set_mode(AWAY, '家中无人超过10分钟')
+                self.set_mode(AWAY, '家中无人超过%g分钟' % (self.away_after_sec / 60))
         return self.mode
 
     def set_mode(self, mode, reason=''):
