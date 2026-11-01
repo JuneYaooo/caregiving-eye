@@ -64,7 +64,7 @@ class PostureSM:
         st = self.sm.setdefault(tid, {'state': 'unknown', 'cand': None, 'cand_n': 0,
                                       'last_stand_ts': now, 'lying_since': None,
                                       'last_lying_alert': 0, 'fall_alerted': False,
-                                      'kpts_ok': False})
+                                      'kpts_ok': False, 'stand_since': None})
         if st['state'] == 'stand':
             st['last_stand_ts'] = now   # 持续站立时也要刷新，否则站久了的人跌倒永远判不出来
         angle, tlen, aspect = self._geom(kpts, bbox)
@@ -79,8 +79,10 @@ class PostureSM:
                 prev, st['state'] = st['state'], new
                 st['cand'], st['cand_n'] = None, 0
                 if new == 'stand':
-                    st['last_stand_ts'] = now
+                    st['last_stand_ts'] = st['stand_since'] = now
                     st['fall_alerted'] = False
+                if new != 'stand':
+                    st['stand_since'] = None
                 if new == 'lie':
                     st['lying_since'] = now
                     # 跌倒判定: 近期站立 → 突然倒地 (必须关键点确认)
@@ -99,6 +101,11 @@ class PostureSM:
             st['last_lying_alert'] = now
             return 'lying_long'
         return None
+
+    def standing_for(self, tid, now):
+        """已经连续站了多少秒（关键点确认的站姿；没在站返回 0）"""
+        st = self.sm.get(tid)
+        return now - st['stand_since'] if st and st['stand_since'] and st['kpts_ok'] else 0.0
 
     def state(self, tid):
         return self.sm[tid]['state'] if tid in self.sm else 'unknown'

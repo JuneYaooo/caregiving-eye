@@ -11,7 +11,7 @@ import numpy as np
 import cv2
 
 ZONE_KEYS = ('cat_zones', 'pet_zones', 'bathroom_zones', 'bedroom_zones',
-             'rest_zones', 'danger_zones')
+             'rest_zones', 'danger_zones', 'entry_zones')
 
 
 def load_zones(path):

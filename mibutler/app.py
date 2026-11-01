@@ -56,6 +56,7 @@ class Ctx:
         self.person_seen_ts = None        # 本次运行里真正看到人的最近时间（作息判断用）
         self.centers = {}                 # tid -> 最近位置，跌倒待定时目标可能已经丢失
         self.zones_valid = True
+        self.exit_pts = None              # 最后一次看到人时他们的位置（判断是不是从大门离开）
         self.started = time.time()
 
 

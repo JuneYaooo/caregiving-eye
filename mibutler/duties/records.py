@@ -45,7 +45,8 @@ def status(app, c):
 
 def retention(app, c):
     app.disk = upkeep.retention(app.ev_dir, keep_days=float(cfg('RETAIN_DAYS', 7)),
-                                max_gb=float(cfg('MAX_EVENTS_GB', 5)))
+                                max_gb=float(cfg('MAX_EVENTS_GB', 5)),
+                                cases_max_gb=float(cfg('CASES_MAX_GB', 2)))
     for name in ('alerts.jsonl', 'incidents.jsonl'):
         upkeep.rotate_log(os.path.join(app.ev_dir, name))
 

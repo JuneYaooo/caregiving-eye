@@ -131,6 +131,63 @@ def test_departure_and_arrival_with_snapshot(tmp_path):
     assert b.mode == HOME
 
 
+def test_intermittent_return_switches_home(tmp_path):
+    """回家的人在各房间走动、时进时出镜头：每次只露面 40 秒，中间离开 70 秒，也要切回在家"""
+    b = make_butler(tmp_path)
+    b.mode = AWAY
+    t = 1000
+    for _ in range(4):
+        for _ in range(40):
+            b.update_presence(True, count=1, now=t)
+            t += 1
+        for _ in range(70):
+            b.update_presence(False, now=t)
+            t += 1
+    assert b.mode == HOME
+
+
+def test_brief_pass_in_away_stays_away(tmp_path):
+    """无人值守时只出现 1 分钟，不切回在家（入侵照常报）"""
+    b = make_butler(tmp_path)
+    b.mode = AWAY
+    for t in range(60):
+        b.update_presence(True, count=1, now=1000 + t)
+    for t in range(60, 400):
+        b.update_presence(False, now=1000 + t)
+    assert b.mode == AWAY
+
+
+def test_manual_mode_and_mute_survive_restart(tmp_path):
+    b = make_butler(tmp_path)
+    b.handle_command('是我')
+    b.handle_command('静音2小时')
+    b2 = Butler(events_path=str(tmp_path / 'alerts.jsonl'))
+    assert b2.mode == HOME and b2.manual_until > b2.muted_until - 3 * 3600
+    assert b2.muted_until > 0
+
+
+def test_left_into_other_room_is_not_departure(tmp_path):
+    """标了大门：人最后不是从大门消失 → 不报出门，10 分钟后仍在家；够 AWAY_INSIDE_SEC 才进无人值守"""
+    b = make_butler(tmp_path)
+    for t in range(0, 300):
+        b.update_presence(True, count=1, now=1000 + t)
+    for t in range(300, 300 + 1200):
+        b.update_presence(False, now=1000 + t, exit_via_entry=False)
+    assert not [s for s in b.sent if s[0] == 'departure'] and b.mode == HOME
+    for t in range(1500, 300 + 3700):
+        b.update_presence(False, now=1000 + t, exit_via_entry=False)
+    assert b.mode == AWAY
+
+
+def test_left_via_door_is_departure(tmp_path):
+    b = make_butler(tmp_path)
+    for t in range(0, 300):
+        b.update_presence(True, count=1, now=1000 + t)
+    for t in range(300, 300 + 700):
+        b.update_presence(False, now=1000 + t, exit_via_entry=True)
+    assert [s for s in b.sent if s[0] == 'departure'] and b.mode == AWAY
+
+
 # ---------------- 整条感知链：雕像不再拖住警觉等级和算力 ----------------
 
 class FakeModel:

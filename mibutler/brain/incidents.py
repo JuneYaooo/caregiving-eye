@@ -10,6 +10,7 @@
   学习   回复“没事”记为误报。同一类型在同一画面位置 14 天内误报 >= 3 次，以后在这里降一级提醒
          （火情类除外，永不降级）。回复“收到”只停止催办；回复“属实”记为真实事件。
          误报 / 属实还会通知 on_ack 回调，跌倒样本库据此给样本打标签，用于再训练骨架模型。
+  自愈   倒地类急报还没人确认，但这个人已经自己站起来了：停止催办并告知（仍可回复“没事 / 属实”补标）。
 """
 import json, os, threading, time
 
@@ -43,7 +44,7 @@ class Incident:
         self.types, self.texts, self.cells = [], [], set()
         self.snapshot = self.clip = None
         self.reminds = 0
-        self.acked = None             # None | 'ok' | 'false' | 'me'
+        self.acked = None             # None | 'ok' | 'false' | 'me' | 'true' | 'recovered'（自己站起来了）
 
     def to_dict(self, now):
         return {'id': self.id, 'family': self.family, 'subject': self.subject,
@@ -101,6 +102,9 @@ class IncidentManager:
             family = FAMILY.get(etype, etype)
             key = (family, subject)
             inc = self.open.get(key)
+            if inc and inc.acked == 'recovered' and RANK[level] >= RANK['GUARD']:
+                self._close(key, inc, now, None)    # 站起来以后又出事，按新事件重新提醒
+                inc = None
             if inc and inc.acked in ('false', 'me'):
                 inc.updated = now       # 已确认误报 / 本人：静默跟踪到结案
                 return inc
@@ -147,8 +151,8 @@ class IncidentManager:
                     if quiet > self.critical_quiet_sec:
                         self._close(key, inc, now, '%d 分钟内没有再出现异常，自动结案；仍未确认，请查看录像。'
                                     % (quiet / 60))
-                elif quiet > self.quiet_sec:
-                    self._close(key, inc, now, None)
+                elif quiet > (self.critical_quiet_sec if inc.acked == 'recovered' else self.quiet_sec):
+                    self._close(key, inc, now, None)    # 自己站起来的留久一点，方便主人回“没事”补标
 
     def _close(self, key, inc, now, say):
         self.open.pop(key, None)
@@ -158,13 +162,26 @@ class IncidentManager:
         with open(self.log_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(inc.to_dict(now), ensure_ascii=False) + '\n')
 
+    def recovered(self, subject, now=None):
+        """倒地类事件的当事人已经站起来走动：没人确认的急报 / 疑似停止催办；返回处理了几个"""
+        now = now or time.time()
+        with self._lock:
+            inc = self.open.get(('person_down', subject))
+            if not inc or inc.acked is not None or RANK[inc.level] < RANK['GUARD']:
+                return 0
+            inc.acked = 'recovered'
+            inc.updated = now
+            self.butler.notify('INFO', '#%s 已经自己站起来了，停止催办。如需复核请看录像；'
+                               '是误报可回复“没事”。' % subject, event_type='incident_close', cooldown=0)
+        return 1
+
     # ---------- 主人回复 ----------
     def ack(self, kind, families=None):
         """kind: 'ok' 收到 / 'false' 误报 / 'true' 属实 / 'me' 是我本人；返回处理了几个事件"""
         now = time.time()
         with self._lock:
             # “属实”可以跟在“收到”之后补充
-            ackable = (None, 'ok') if kind == 'true' else (None,)
+            ackable = {'true': (None, 'ok', 'recovered'), 'false': (None, 'recovered')}.get(kind, (None,))
             targets = [i for i in self.open.values() if i.acked in ackable
                        and (families is None or i.family in families)]
             if not targets:

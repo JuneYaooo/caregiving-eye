@@ -10,8 +10,10 @@ from mibutler.vision.yolo import PERSON, CAT, DOG
 from mibutler.vision.tracker import SimpleTracker
 from mibutler.abilities.fall import FALL_CFG
 from mibutler.config import cfg
+from mibutler.zones import in_poly
 
 PET_MIN_SCORE = 0.45
+RECOVER_STAND_SEC = float(cfg('RECOVER_STAND_SEC', 5))   # 被报倒地的人连续站够这么久，停止催办
 
 
 def watchdog(app, c):
@@ -104,11 +106,18 @@ def detect(app, c):
     app.mobility.forget(set(app.tracker.tracks))
 
     if c.people:
+        # 人最后出现的位置，用来判断是从大门出去的还是去了别的房间（云台不在原位时不算数）
+        c.exit_pts = [t.center() for t in c.people] if c.zones_valid else None
         c.last_person_ts = c.person_seen_ts = ts
         if ts - c.people_frame_ts > 2:       # 留一张有人的画面，离家通报配图用
             c.people_frame, c.people_frame_ts = frame, ts
+    entries = c.zones.get('entry_zones') or []
+    via_entry = None                     # None = 没标大门或不确定，按原来的规则
+    if entries and not c.people and c.exit_pts:
+        via_entry = any(in_poly(p, z['poly']) for p in c.exit_pts for z in entries)
     c.mode = app.butler.update_presence(bool(c.people), only_pets=bool(c.pets) and not c.people,
-                                        count=len(c.people), evidence=app.presence_evidence)
+                                        count=len(c.people), evidence=app.presence_evidence,
+                                        exit_via_entry=via_entry)
     c.det_seq += 1
 
 
@@ -126,6 +135,8 @@ def pose(app, c):
         if not app.mobility.moved(t.tid):
             continue    # 家具化：没自己动过的人形不参与跌倒 / 久卧判断，也不喂骨架分类器
         c.centers[t.tid] = t.center()
+        if app.posture.standing_for(t.tid, c.frame_ts) >= RECOVER_STAND_SEC:
+            app.incidents.recovered(t.tid)   # 被报倒地的人自己站起来了：别再催
         app.samples.push(t.tid, c.frame_ts, k)
         if app.fall_clf:
             probs[t.tid] = app.fall_clf.update(t.tid, c.frame_ts, k)

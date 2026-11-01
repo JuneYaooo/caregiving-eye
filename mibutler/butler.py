@@ -3,6 +3,7 @@
 由 app.py 组装、duties/ 里的任务通过研判层调用；也可独立 import 用于发日报 / 接收指令。
 """
 import hmac, json, os, queue, secrets, time, threading
+from collections import deque
 import urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from mibutler.config import cfg, ROOT
@@ -50,10 +51,22 @@ class Butler:
         self.away_after_sec = float(cfg('AWAY_DELAY_SEC', 600))  # 无人多久进入 AWAY
         self.person_absent_since = None
         self.depart_confirm_sec = float(cfg('DEPART_CONFIRM_SEC', 60))  # 连续多久没看到人才算离开
+        # 标了大门（zones.json 的 entry_zones）时：人最后不是从大门消失的，多半去了镜头外的房间，
+        # 不通报出门，等 AWAY_INSIDE_SEC 还没再出现才进入无人值守
+        self.away_inside_sec = float(cfg('AWAY_INSIDE_SEC', 3600))
+        self._exit_inside = False
         self._spell_start = None         # 本次在场的起点（短暂漏检后接着算）
         self._depart_pending = False
+        # 回家确认：最近 HOME_WINDOW_SEC 秒里累计看到人满 HOME_CONFIRM_SEC 秒就切回在家。
+        # 不要求连续：回家的人会在各房间走动，进出镜头，连续 2 分钟很难凑满。
+        self.home_confirm_sec = float(cfg('HOME_CONFIRM_SEC', 120))
+        self.home_window_sec = float(cfg('HOME_WINDOW_SEC', 600))
+        self._seen = deque()             # [(ts, 这一次看到人计入的秒数)]
+        self._last_update = None
         self.schedule = self._parse_schedule(cfg('MODE_SCHEDULE', ''))
         self._lock = threading.Lock()    # 多个线程可能同时通报
+        self.state_path = os.path.join(os.path.dirname(self.events_path), 'butler_state.json')
+        self._load_state()
         self.incidents = None            # 由大脑注入：事件研判层
         self.on_command = None           # 由大脑注入：处理“状态 / 看看”等需要调度的指令
         # 推送放到后台线程，网络卡顿不会拖慢识别
@@ -97,11 +110,19 @@ class Butler:
                 return mode
         return None
 
-    def update_presence(self, person_present, only_pets=False, count=0, now=None, evidence=None):
+    def update_presence(self, person_present, only_pets=False, count=0, now=None, evidence=None,
+                        exit_via_entry=None):
         """感知层每次检测后调用: 依据在场情况自动切模式 (带迟滞) + 进出事件
-        evidence(kind) -> 快照路径，只在真要通报进出时才调用（kind = 'arrival' / 'departure'）"""
+        evidence(kind) -> 快照路径，只在真要通报进出时才调用（kind = 'arrival' / 'departure'）
+        exit_via_entry: 看不到人时，最后一次是不是在大门区域看到的；None = 没标大门 / 不确定"""
         now = now or time.time()
         snap = lambda kind: evidence(kind) if evidence else None
+        if person_present:
+            dt = min(now - self._last_update, 2.0) if self._last_update else 0.0
+            self._seen.append((now, dt))
+        self._last_update = now
+        while self._seen and now - self._seen[0][0] > self.home_window_sec:
+            self._seen.popleft()
         # 先记录在场 / 离场时间，指令和日程生效期间也要记，否则结束后无法判断离家多久
         if person_present:
             first_back = self.person_since is None and self.person_absent_since is not None
@@ -112,6 +133,7 @@ class Butler:
                 self.person_since = self.person_since or now
             self.person_absent_since = None
             self._depart_pending = False
+            self._exit_inside = False
             # 进出事件: 空置超过 60 秒后有人出现 → 有人回来了 (无人值守模式交给入侵告警)
             if first_back and gap > self.depart_confirm_sec and self.mode != AWAY:
                 self.notify('INFO', '有人回来了，当前在家 %d 人。' % max(count, 1),
@@ -120,10 +142,12 @@ class Butler:
             if self.person_since is not None:          # 刚刚看不到人
                 self._spell_start = self.person_since
                 self._depart_pending = now - self.person_since > 120
+                self._exit_inside = exit_via_entry is False
             self.person_absent_since = self.person_absent_since or now
             self.person_since = None
             # 进出事件: 在场超过 2 分钟、之后连续 60 秒都没看到人 → 通报离开（防漏检一帧就报“出门”）
-            if self._depart_pending and now - self.person_absent_since >= self.depart_confirm_sec:
+            if self._depart_pending and not self._exit_inside \
+                    and now - self.person_absent_since >= self.depart_confirm_sec:
                 self._depart_pending = False
                 left = max(self.away_after_sec - (now - self.person_absent_since), 0)
                 self.notify('INFO', '人都出门了，约 %g 分钟后进入无人值守。' % round(left / 60, 1),
@@ -139,20 +163,24 @@ class Butler:
             self.set_mode(HOME, '夜间日程结束')
             self.person_absent_since = None if person_present else now
         if person_present:
-            # 在家超过迟滞期 → HOME
-            if now - self.person_since > 120 and self.mode in (AWAY, PET):
-                self.set_mode(HOME, '%s出现超过2分钟' % self.owner)
-        elif now - self.person_absent_since > self.away_after_sec:
+            # 最近一段时间里累计在场够久 → HOME
+            if self.mode in (AWAY, PET) and sum(d for _, d in self._seen) >= self.home_confirm_sec:
+                self.set_mode(HOME, '%g 分钟内累计看到人超过 %g 分钟'
+                              % (self.home_window_sec / 60, self.home_confirm_sec / 60))
+        elif now - self.person_absent_since > (self.away_inside_sec if self._exit_inside else self.away_after_sec):
             if only_pets and self.mode != PET:
                 self.set_mode(PET, '家中只剩宠物')
             elif not only_pets and self.mode != AWAY:
-                self.set_mode(AWAY, '家中无人超过%g分钟' % (self.away_after_sec / 60))
+                self.set_mode(AWAY, '最后看到的人没走大门，但已 %g 分钟没再出现' % (self.away_inside_sec / 60)
+                              if self._exit_inside else '家中无人超过%g分钟' % (self.away_after_sec / 60))
         return self.mode
 
     def set_mode(self, mode, reason=''):
         if mode == self.mode:
             return self.mode
         old, self.mode = self.mode, mode
+        if mode == AWAY:
+            self._seen.clear()           # 进入无人值守后重新累计，之前在家的时间不算回家
         self.notify('INFO', '切换到%s（%s）。有事我叫%s。' % (MODE_CN.get(mode, mode), reason, self.owner),
                     event_type='mode_change', cooldown=0)
         return self.mode
@@ -160,6 +188,29 @@ class Butler:
     def set_manual_mode(self, mode, hours=4):
         self.manual_until = time.time() + hours * 3600
         self.set_mode(mode, '%s指令' % self.owner)
+        self._save_state()
+
+    # ---------- 指令状态落盘：重启后“是我”“模式”“静音”继续有效 ----------
+    def _load_state(self):
+        try:
+            d = json.load(open(self.state_path, encoding='utf-8'))
+        except (OSError, ValueError):
+            return
+        now = time.time()
+        if float(d.get('manual_until', 0)) > now and d.get('mode') in MODE_CN:
+            self.manual_until, self.mode = float(d['manual_until']), d['mode']
+        if float(d.get('muted_until', 0)) > now:
+            self.muted_until = float(d['muted_until'])
+
+    def _save_state(self):
+        try:
+            tmp = self.state_path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump({'mode': self.mode, 'manual_until': self.manual_until,
+                           'muted_until': self.muted_until}, f)
+            os.replace(tmp, self.state_path)
+        except OSError as e:
+            print('[butler] 指令状态保存失败：', e)
 
     # ---------- 通报 ----------
     def notify(self, level, text, event_type=None, cooldown=None, snapshot=None, clip=None):
@@ -242,6 +293,7 @@ class Butler:
             except ValueError:
                 pass
             self.muted_until = time.time() + hours * 3600
+            self._save_state()
             return '静音 %g 小时（急报除外）。' % hours
         if t.startswith('模式'):
             m = t.replace('模式', '').strip().lower()
