@@ -7,7 +7,7 @@
   events/base_YYYYMMDD.jpg               当天底图（热力图叠加用）
 程序重启后会读回当天已有数据继续累计。
 """
-import json, os, time
+import copy, json, os, threading, time
 import numpy as np
 
 GRID = (15, 26)   # 行 × 列
@@ -22,6 +22,7 @@ class ActivityLog:
         self.unseen_hours = unseen_hours  # >0 时在久未出现时提醒
         self.day = None
         self.tracks = {}                  # tid -> {'c', 'ts', 'zones'}
+        self._lock = threading.RLock()    # update 在主循环，save 在 io 线程
         self._reset(time.strftime('%Y%m%d'))
 
     def _paths(self, day):
@@ -49,6 +50,10 @@ class ActivityLog:
         self.tracks = {}
 
     def update(self, tracks, zones, W, H, now, in_poly):
+        with self._lock:
+            self._update(tracks, zones, W, H, now, in_poly)
+
+    def _update(self, tracks, zones, W, H, now, in_poly):
         day = time.strftime('%Y%m%d', time.localtime(now))
         if day != self.day:
             self.save()
@@ -101,11 +106,15 @@ class ActivityLog:
         return now - last if last else None
 
     def save(self):
+        with self._lock:          # 先在锁内拍一份快照，写盘放到锁外
+            jp, hp = self._paths(self.day)
+            stats, grid = copy.deepcopy(self.stats), self.grid.copy()
         os.makedirs(self.out_dir, exist_ok=True)
-        jp, hp = self._paths(self.day)
-        with open(jp, 'w', encoding='utf-8') as f:
-            json.dump(self.stats, f, ensure_ascii=False, indent=1)
-        np.save(hp, self.grid)
+        tmp = jp + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(stats, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, jp)
+        np.save(hp, grid)
 
 
 def summarize(stats, label):

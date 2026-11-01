@@ -2,17 +2,18 @@
 """事件视频存证：保存事件发生前后的一小段画面。
 
 环形缓冲持续保留最近 pre_sec 秒的低分辨率画面；trigger() 后继续收集 post_sec 秒，
-随后在后台线程写成 mp4。内存占用约为 width×height×3×fps×pre_sec 字节。
+随后在后台线程写成 mp4。内存占用约为 width×height×3×fps×(pre_sec+post_sec) 字节；默认 640 宽约 90 MB。
 """
 import collections, os, threading, time
 import cv2
 
 
 class ClipRecorder:
-    def __init__(self, out_dir, pre_sec=10, post_sec=15, fps=5, width=960):
+    def __init__(self, out_dir, pre_sec=10, post_sec=15, fps=5, width=640, max_sec=120):
         self.out_dir = out_dir
         self.pre_sec, self.post_sec = pre_sec, post_sec
         self.fps, self.width = fps, width
+        self.max_sec = max_sec        # 单段录像最长秒数，防止反复续录把内存吃满
         self.buf = collections.deque(maxlen=max(1, int(pre_sec * fps)))
         self.active = []          # [{'path','until','frames'}]
         self._last_push = 0
@@ -50,10 +51,10 @@ class ClipRecorder:
         with self._lock:
             for c in self.active:
                 if c['tag'] == tag:
-                    c['until'] = max(c['until'], now + self.post_sec)
+                    c['until'] = min(max(c['until'], now + self.post_sec), c['start'] + self.max_sec)
                     return c['path']
             path = os.path.join(self.out_dir, 'clip_%s_%s.mp4' % (tag, time.strftime('%Y%m%d_%H%M%S')))
-            self.active.append({'tag': tag, 'path': path, 'until': now + self.post_sec,
+            self.active.append({'tag': tag, 'path': path, 'until': now + self.post_sec, 'start': now,
                                 'frames': list(self.buf)})
         return path
 

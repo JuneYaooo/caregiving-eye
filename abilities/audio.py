@@ -16,7 +16,7 @@
   baby_cry     婴儿哭
   pet_distress 猫狗嘶叫、哀鸣、长时间吠叫
 """
-import collections, csv, os, queue, subprocess, threading, time
+import collections, csv, os, queue, shutil, subprocess, threading, time
 import numpy as np
 
 SR = 16000
@@ -70,6 +70,8 @@ class AudioListener(threading.Thread):
         self.events = queue.Queue(maxsize=500)        # (ts, group, score, top)
         self.recent = collections.deque(maxlen=200)   # (ts, group, score)
         self.alive = True
+        self.disabled = False                         # 缺 ffmpeg 等无法恢复的问题，看门狗不再重启
+        self.proc = None
         self.level_db = -90.0
         self.last_data = 0.0
         self.inferences = 0
@@ -81,6 +83,9 @@ class AudioListener(threading.Thread):
         cp = cfg('AUDIO_CLASS_MAP', os.path.join(md, 'yamnet_class_map.csv'))
         src = cfg('AUDIO_SOURCE', cfg('RTSP_URL'))
         if not (src and os.path.exists(mp) and os.path.exists(cp)):
+            return None
+        if not shutil.which('ffmpeg'):
+            print('[audio] 未找到 ffmpeg，声音事件已停用')
             return None
         return cls(src, YamnetOnnx(mp, cp))
 
@@ -97,9 +102,10 @@ class AudioListener(threading.Thread):
         ring = np.zeros(int(self.win * SR), np.float32)
         while self.alive:
             try:
-                proc = self._open()
+                proc = self.proc = self._open()
             except FileNotFoundError:
                 print('[audio] 未找到 ffmpeg，声音事件已停用')
+                self.disabled = True
                 return
             while self.alive:
                 raw = proc.stdout.read(hop_bytes)
@@ -121,8 +127,24 @@ class AudioListener(threading.Thread):
                             self.events.put_nowait((now, g, s, top))
                         except queue.Full:
                             pass
-            proc.kill()
+            self._kill(proc)
             time.sleep(3)   # 断流重连
+
+    @staticmethod
+    def _kill(proc):
+        try:
+            proc.kill()
+            proc.wait(timeout=5)     # 回收子进程，长期重连不留僵尸进程
+        except Exception:
+            pass
+
+    def kick_if_stalled(self, max_sec=60):
+        """流卡住时 read() 会一直阻塞；超过 max_sec 秒没收到数据就杀掉 ffmpeg，触发重连"""
+        if self.proc and self.last_data and time.time() - self.last_data > max_sec:
+            self.last_data = time.time()
+            self._kill(self.proc)
+            return True
+        return False
 
     def heard(self, group, within=30.0, min_count=1):
         """最近 within 秒内是否听到某类声音"""
@@ -131,3 +153,5 @@ class AudioListener(threading.Thread):
 
     def stop(self):
         self.alive = False
+        if self.proc:
+            self._kill(self.proc)

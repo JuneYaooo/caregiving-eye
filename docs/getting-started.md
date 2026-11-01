@@ -219,7 +219,7 @@ Copy-Item zones.example.json zones.json
 
 ### 查看事件与日报
 
-v2 默认将每条提醒写入 `events/alerts.jsonl`，结案的事件写入 `events/incidents.jsonl`（含持续时长、是否确认、快照与录像）。主人回复的“没事”记录在 `events/feedback.jsonl`，用于学习误报位置。重要事件会保存快照 `snap_*.jpg`，跌倒、入侵、火情、突发不适、儿童危险还会保存事件前后的短视频 `events/clips/clip_*.mp4`，路径记录在事件的 `clip` 字段。查看本地记录无需配置机器人；聊天指令接收与回复控制需要额外集成。
+v2 默认将每条提醒写入 `events/alerts.jsonl`，结案的事件写入 `events/incidents.jsonl`（含持续时长、是否确认、快照与录像）。主人回复的“没事”记录在 `events/feedback.jsonl`，用于学习误报位置。重要事件会保存快照 `snap_*.jpg`，跌倒、入侵、火情、突发不适、儿童危险还会保存事件前后的短视频 `events/clips/clip_*.mp4`，路径记录在事件的 `clip` 字段。查看本地记录无需配置机器人。执事运行时会在本机开一个指令入口 `http://127.0.0.1:8766/command`（端口见 `COMMAND_PORT`），机器人把主人的回复 POST 到这里即可；也可以直接运行 `python butler.py cmd 没事`。
 
 ```powershell
 # 汇总今天的事件与活动

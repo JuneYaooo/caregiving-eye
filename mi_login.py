@@ -104,7 +104,7 @@ def two_factor(s, user, pwd):
         print('(限流 code 20024 等 5 分钟再试)')
     ticket = input('输入收到的验证码: ').strip()
     r = s.post('https://account.xiaomi.com/identity/auth/verify%s'
-               '?_flag%s&ticket=%s&trust=false&_json=true' % (name, flag, ticket))
+               '?_flag=%s&ticket=%s&trust=false&_json=true' % (name, flag, ticket))
     d = json.loads(r.text.replace('&&&START&&&', ''))
     assert d.get('code') == 0, d
     return d.get('location')

@@ -211,7 +211,7 @@ def main():
                              zone_keys=('bathroom_zones', 'bedroom_zones', 'rest_zones'))
     clips = None if args.no_clips else ClipRecorder(
         os.path.join(ev_dir, 'clips'), pre_sec=float(cfg('CLIP_PRE_SEC', 10)),
-        post_sec=float(cfg('CLIP_POST_SEC', 15)))
+        post_sec=float(cfg('CLIP_POST_SEC', 15)), width=int(cfg('CLIP_WIDTH', 640)))
 
     # ---------- 常驻服务 ----------
     svc = {'frames': None, 'audio': None, 'stream_down': False, 'disk': {}}
@@ -268,8 +268,11 @@ def main():
             svc['stream_down'] = False
             butler.notify('INFO', '画面已恢复。', event_type='stream_up', cooldown=0)
         a = svc['audio']
-        if a is not None and not a.is_alive() and not args.no_audio:
-            start_audio()
+        if a is not None and not args.no_audio:
+            if not a.is_alive() and not a.disabled:
+                start_audio()
+            elif a.is_alive() and a.kick_if_stalled(60):
+                print('[audio] 60 秒没收到声音数据，重连')
 
     def t_motion(c):
         frame, ts, seq = svc['frames'].latest()
@@ -300,6 +303,9 @@ def main():
             c.last_person_ts = ts
         c.det_seq += 1
 
+    def in_rest(pt):
+        return ctx.zones_valid and any(in_poly(pt, z['poly']) for z in ctx.zones.get('rest_zones', []))
+
     def t_pose(c):
         pose_dets = pose_model(c.frame, 0.3) if pose_model else []
         c.kpts, c.posture = {}, {}
@@ -316,7 +322,8 @@ def main():
                 c.fall_ts[t.tid] = time.time()
                 signal('fall', 'CRITICAL', '判断有人跌倒（#%d），已抓拍并录像。' % t.tid,
                        subject=t.tid, pt=t.center())
-            elif evt == 'lying_long':
+            elif evt == 'lying_long' and not in_rest(t.center()):
+                # 在床、沙发等休息区躺着不算倒地久卧；那里的异常交给突发不适多信号判断
                 signal('lying_long', 'CRITICAL', '有人倒地超过 %g 秒未起身（#%d），请查看。'
                        % (FALL_CFG['lying_min_secs'], t.tid), subject=t.tid, pt=t.center())
         for tid in list(psm.sm):
@@ -361,8 +368,9 @@ def main():
                 continue
             signal('intrusion', 'GUARD', '家中无人，但检测到移动的人形（#%d），已抓拍并录像。'
                    '若是您本人，回复"是我"。' % t.tid, pt=t.center())
-            if ptz.enabled and not ptz.busy:
-                dx = (t.center()[0] - c.W / 2) / c.W
+            dx = (t.center()[0] - c.W / 2) / c.W
+            if ptz.can_nudge() and abs(dx) >= 0.15:
+                ptz.request()     # 先占位，转完之前不再排新的转动，避免按旧画面连转过头
                 sched.once('ptz_follow', lambda d=dx: ptz.nudge(d), lane='io')
             break
 
@@ -383,6 +391,7 @@ def main():
         info = [(t, c.kpts.get(t.tid), c.posture.get(t.tid, 'unknown')) for t in c.persons]
         for lvl, et, text in child.update(info, c.zones, c.W, c.H, time.time(), in_poly):
             signal(et, lvl, text, pt=None)
+        child.forget(set(tracker.tracks))
 
     def t_zones(c):
         now = time.time()
@@ -396,6 +405,9 @@ def main():
                                % (z['name'], ZONE_DWELL_MIN), subject=t.tid, pt=t.center())
                 else:
                     c.zone_enter.pop(key, None)
+        for key in list(c.zone_enter):
+            if key[0] not in tracker.tracks:      # 目标已被跟踪器丢弃
+                c.zone_enter.pop(key)
         if c.mode == NIGHT and c.persons and c.zones.get('bedroom_zones'):
             if not any(in_poly(t.center(), z['poly']) for t in c.persons for z in c.zones['bedroom_zones']):
                 signal('night_wander', 'GUARD', '夜间检测到有人在卧室外活动。', pt=c.persons[0].center())
@@ -460,7 +472,7 @@ def main():
 
     def daily_report():
         from report import daily_report as build
-        text = build()
+        text = build(events_dir=ev_dir)
         head = '\n'.join(text.splitlines()[:12])
         butler.notify('MORNING', head, event_type='daily_report', cooldown=0)
 
@@ -514,6 +526,7 @@ def main():
         sched.once('look', lambda: cv2.imwrite(path, img), lane='io')
         return '已抓拍：%s' % path
     butler.on_command = on_command
+    butler.start_command_server()
 
     enabled = [t.name for t in sched.tasks]
     print('[butler] 值班表：%s' % enabled)

@@ -121,3 +121,9 @@ class ChildSafety:
         else:
             self.alone_since = None
         return events
+
+    def forget(self, alive_tids):
+        """跟踪器已经丢弃的目标不再保留投票，避免长期运行内存一直涨"""
+        for tid in list(self.votes):
+            if tid not in alive_tids:
+                self.votes.pop(tid)

@@ -72,15 +72,21 @@ class YoloOnnx:
         kpts = kpts[keep] if kpts is not None else None
         if not len(scores):
             return []
+        # 模型输出 (cx, cy, w, h)；NMS 需要 (左上x, 左上y, w, h)
         xy = boxes_raw[:, :2] - boxes_raw[:, 2:] / 2
         wh = boxes_raw[:, 2:]
         boxes_px = np.concatenate([xy, wh], axis=1)
-        idx = cv2.dnn.NMSBoxes(boxes_px.tolist(), scores.tolist(), score_th, 0.45)
+        if cls_ids is not None:
+            # 按类别分别做 NMS：人抱着猫时猫的框不会被人的框吞掉
+            idx = cv2.dnn.NMSBoxesBatched(boxes_px.tolist(), scores.tolist(),
+                                          cls_ids.tolist(), score_th, 0.45)
+        else:
+            idx = cv2.dnn.NMSBoxes(boxes_px.tolist(), scores.tolist(), score_th, 0.45)
         out = []
         for i in np.array(idx).flatten():
-            cx, cy, w, h = boxes_px[i]
-            x1 = (cx - w / 2 - dx) / r; y1 = (cy - h / 2 - dy) / r
-            x2 = (cx + w / 2 - dx) / r; y2 = (cy + h / 2 - dy) / r
+            bx, by, w, h = boxes_px[i]
+            x1 = (bx - dx) / r; y1 = (by - dy) / r
+            x2 = (bx + w - dx) / r; y2 = (by + h - dy) / r
             det = {'bbox': [float(x1), float(y1), float(x2), float(y2)],
                    'score': float(scores[i]), 'cls': int(cls_ids[i]) if not self.is_pose else PERSON}
             if kpts is not None:

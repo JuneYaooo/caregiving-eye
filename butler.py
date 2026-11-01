@@ -3,7 +3,8 @@
 被 care_v2 等感知层调用; 也可独立 import 用于发日报/接收指令。
 """
 import json, os, queue, time, threading
-import urllib.request
+import urllib.parse, urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from common_config import cfg
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -64,12 +65,17 @@ class Butler:
             if not seg or ':' not in seg:
                 continue
             window, mode = seg.rsplit(':', 1)
+            mode = mode.strip().lower()
+            if mode not in MODE_CN:
+                print('[butler] MODE_SCHEDULE 里的模式 "%s" 不认识（可用 away/home/pet/night），已忽略这一段' % mode)
+                continue
             try:
                 a, b = window.split('-')
                 ah, am = map(int, a.split(':'))
                 bh, bm = map(int, b.split(':'))
                 out.append((ah * 60 + am, bh * 60 + bm, mode))
             except ValueError:
+                print('[butler] MODE_SCHEDULE 时段 "%s" 格式不对（应为 HH:MM-HH:MM），已忽略' % window)
                 continue
         return out
 
@@ -88,36 +94,39 @@ class Butler:
     def update_presence(self, person_present, only_pets=False, now=None):
         """感知层每帧调用: 依据在场情况自动切模式 (带迟滞)"""
         now = now or time.time()
+        # 先记录在场 / 离场时间，指令和日程生效期间也要记，否则结束后无法判断离家多久
+        if person_present:
+            self.person_since = self.person_since or now
+            self.person_absent_since = None
+        else:
+            self.person_absent_since = self.person_absent_since or now
+            self.person_since = None
         if now < self.manual_until:
             return self.mode
         sched = self._scheduled_mode(now)
-        if sched and person_present is False:
+        if sched and not person_present:
             self.set_mode(sched, '按日程')
             return self.mode
+        if self.mode == NIGHT and sched != NIGHT:
+            # 夜间日程结束：回到在家照护；离场计时从现在重新算，免得一早就判成无人
+            self.set_mode(HOME, '夜间日程结束')
+            self.person_absent_since = None if person_present else now
         if person_present:
-            if self.person_since is None:
-                self.person_since = now
-            if self.person_absent_since is not None:
-                self.person_absent_since = None
             # 在家超过迟滞期 → HOME
             if now - self.person_since > 120 and self.mode in (AWAY, PET):
                 self.set_mode(HOME, '%s出现超过2分钟' % self.owner)
-        else:
-            if self.person_since is not None:
-                self.person_absent_since = now
-                self.person_since = None
-            if self.person_absent_since and now - self.person_absent_since > 600:
-                if only_pets and self.mode != PET:
-                    self.set_mode(PET, '家中只剩宠物')
-                elif self.mode != AWAY:
-                    self.set_mode(AWAY, '家中无人超过10分钟')
+        elif now - self.person_absent_since > 600:
+            if only_pets and self.mode != PET:
+                self.set_mode(PET, '家中只剩宠物')
+            elif not only_pets and self.mode != AWAY:
+                self.set_mode(AWAY, '家中无人超过10分钟')
         return self.mode
 
     def set_mode(self, mode, reason=''):
         if mode == self.mode:
             return self.mode
         old, self.mode = self.mode, mode
-        self.notify('INFO', '切换到%s（%s）。有事我叫%s。' % (MODE_CN[mode], reason, self.owner),
+        self.notify('INFO', '切换到%s（%s）。有事我叫%s。' % (MODE_CN.get(mode, mode), reason, self.owner),
                     event_type='mode_change', cooldown=0)
         return self.mode
 
@@ -144,7 +153,7 @@ class Butler:
         full = '%s %s' % (tag, text)
         if level == 'CRITICAL':
             full += ' 请立即查看！回复"没事"解除。'
-        print('[%s][%s] %s' % (time.strftime('%H:%M:%S'), MODE_CN[self.mode], full))
+        print('[%s][%s] %s' % (time.strftime('%H:%M:%S'), MODE_CN.get(self.mode, self.mode), full))
         # 落盘
         rec = {'ts': time.strftime('%Y-%m-%d %H:%M:%S'), 'level': level,
                'mode': self.mode, 'type': et, 'text': full,
@@ -207,11 +216,80 @@ class Butler:
             return '可用模式: away/home/pet/night'
         if t == '日报':
             from report import daily_report
-            return daily_report()
+            return daily_report(events_dir=os.path.dirname(self.events_path))
         return None
+
+    # ---------- 指令入口（本机 HTTP）----------
+    def start_command_server(self, port=None, host='127.0.0.1'):
+        """在本机开一个很小的 HTTP 入口，机器人或脚本把主人的回复转进来：
+             curl -d "没事" http://127.0.0.1:8766/command
+             python butler.py cmd 没事
+           只监听 127.0.0.1，不对局域网开放。COMMAND_PORT=0 关闭。"""
+        port = int(cfg('COMMAND_PORT', 8766) if port is None else port)
+        if port <= 0:
+            return None
+        butler = self
+
+        class H(BaseHTTPRequestHandler):
+            def _reply(self, code, text):
+                body = text.encode('utf-8')
+                self.send_response(code)
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _handle(self, text):
+                if not self.path.startswith('/command'):
+                    return self._reply(404, 'not found')
+                try:
+                    r = butler.handle_command(text)
+                except Exception as e:
+                    return self._reply(500, '指令出错：%s' % e)
+                self._reply(200, r if r is not None else '没听懂这条指令。')
+
+            def do_GET(self):
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                self._handle((q.get('text') or [''])[0])
+
+            def do_POST(self):
+                n = int(self.headers.get('Content-Length') or 0)
+                raw = self.rfile.read(min(n, 4096)).decode('utf-8', 'replace')
+                if raw.lstrip().startswith('{'):
+                    try:
+                        raw = json.loads(raw).get('text', '')
+                    except ValueError:
+                        pass
+                self._handle(raw)
+
+            def log_message(self, *a):
+                pass
+
+        try:
+            srv = ThreadingHTTPServer((host, port), H)
+        except OSError as e:
+            print('[butler] 指令入口启动失败（端口 %d）：%s' % (port, e))
+            return None
+        threading.Thread(target=srv.serve_forever, daemon=True, name='commands').start()
+        print('[butler] 指令入口：http://%s:%d/command' % (host, port))
+        return srv
+
+
+def send_command(text, port=None):
+    """把一条指令发给正在运行的执事，返回执事的回答"""
+    port = int(port or cfg('COMMAND_PORT', 8766))
+    req = urllib.request.Request('http://127.0.0.1:%d/command' % port, data=text.encode('utf-8'),
+                                 headers={'Content-Type': 'text/plain; charset=utf-8'})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return r.read().decode('utf-8')
 
 
 if __name__ == '__main__':
+    import sys
+    if len(sys.argv) >= 3 and sys.argv[1] == 'cmd':
+        # 用法：python butler.py cmd 没事
+        print(send_command(' '.join(sys.argv[2:])))
+        sys.exit(0)
     b = Butler()
     b.notify('INFO', '%s上线，当前模式：%s。' % (b.name, MODE_CN[b.mode]))
     print(b.handle_command('静音2小时'))

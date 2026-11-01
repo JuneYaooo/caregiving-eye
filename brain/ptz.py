@@ -19,6 +19,16 @@ class PtzController:
         self.net = 0.0                # 累计水平转动（秒 × 方向）
         self.last_move = 0.0
         self.busy = False
+        self.pending = False          # 已排队、还没执行完的转动指令
+
+    def can_nudge(self, settle=1.0):
+        """没有在转、没有排队，且上次转完已过 settle 秒（保证下一次用的是转动后的新画面）"""
+        return (self.enabled and not self.busy and not self.pending
+                and time.time() - self.last_move > settle)
+
+    def request(self):
+        """主循环排队前调用，防止同一个目标连续排进多条转动指令"""
+        self.pending = True
 
     @property
     def zones_valid(self):
@@ -40,13 +50,16 @@ class PtzController:
 
     def nudge(self, dx_frac):
         """目标偏离画面中心 dx_frac（-0.5..0.5）时转一下；返回是否发出指令"""
-        if not self.enabled or self.busy or abs(dx_frac) < 0.15:
-            return False
-        self._move(1 if dx_frac > 0 else -1, self.pulse)
-        return True
+        try:
+            if not self.enabled or self.busy or abs(dx_frac) < 0.15:
+                return False
+            self._move(1 if dx_frac > 0 else -1, self.pulse)
+            return True
+        finally:
+            self.pending = False
 
     def maybe_return(self, target_present):
-        if not self.enabled or self.busy or abs(self.net) < 1e-6:
+        if not self.enabled or self.busy or self.pending or abs(self.net) < 1e-6:
             return False
         if target_present or time.time() - self.last_move < self.return_sec:
             return False

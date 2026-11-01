@@ -69,6 +69,9 @@ class Scheduler:
             self._once.append((time.time() + delay, name, fn, lane))
 
     def daily(self, name, hhmm, fn, lane='io'):
+        # 统一成两位数 "HH:MM"，否则 "9:30" 和 "21:30" 按字符串比较会出错
+        h, m = (int(x) for x in str(hhmm).strip().split(':'))
+        hhmm = '%02d:%02d' % (h, m)
         self._daily.append({'name': name, 'hhmm': hhmm, 'fn': fn, 'lane': lane,
                             'last': time.strftime('%Y%m%d') if time.strftime('%H:%M') >= hhmm else ''})
 

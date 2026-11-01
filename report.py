@@ -21,9 +21,9 @@ TYPE_CN = {
 }
 
 
-def _load(day, kind):
-    jp = os.path.join(EVENTS_DIR, 'activity_%s_%s.json' % (kind, day))
-    hp = os.path.join(EVENTS_DIR, 'heatmap_%s_%s.npy' % (kind, day))
+def _load(day, kind, events_dir):
+    jp = os.path.join(events_dir, 'activity_%s_%s.json' % (kind, day))
+    hp = os.path.join(events_dir, 'heatmap_%s_%s.npy' % (kind, day))
     stats = json.load(open(jp, encoding='utf-8')) if os.path.exists(jp) else None
     grid = np.load(hp) if os.path.exists(hp) else None
     return stats, grid
@@ -55,11 +55,13 @@ def _hour_bar(hourly):
     return ''.join(blocks[int(v / m * 8)] for v in hourly)
 
 
-def daily_report(day=None):
+def daily_report(day=None, events_dir=None):
+    """events_dir 默认取 .env 的 EVENTS_DIR；执事用 --events-dir 改过目录时会传进来"""
+    ev_dir = events_dir or EVENTS_DIR
     day = day or time.strftime('%Y%m%d')
     date = '%s-%s-%s' % (day[:4], day[4:6], day[6:8])
     evs = []
-    path = os.path.join(EVENTS_DIR, 'alerts.jsonl')
+    path = os.path.join(ev_dir, 'alerts.jsonl')
     if os.path.exists(path):
         for line in open(path, encoding='utf-8'):
             try:
@@ -89,22 +91,22 @@ def daily_report(day=None):
     else:
         lines.append('全天没有需要提醒的事件。')
 
-    base = os.path.join(EVENTS_DIR, 'base_%s.jpg' % day)
+    base = os.path.join(ev_dir, 'base_%s.jpg' % day)
     for kind, label in (('pet', '宠物'), ('person', '家人')):
-        stats, grid = _load(day, kind)
+        stats, grid = _load(day, kind, ev_dir)
         lines += ['', '## %s活动' % label]
         lines += summarize(stats, label)
         if stats and max(stats.get('hourly_active') or [0]) > 0:
             lines.append('  24 小时活跃度：`%s`' % _hour_bar(stats['hourly_active']))
-        img = render_heatmap(grid, base, os.path.join(EVENTS_DIR, 'report_heatmap_%s_%s.png'
+        img = render_heatmap(grid, base, os.path.join(ev_dir, 'report_heatmap_%s_%s.png'
                                                       % (kind, day)))
         if img:
             lines.append('  热力图：%s' % img)
 
     text = '\n'.join(lines)
     print(text)
-    os.makedirs(EVENTS_DIR, exist_ok=True)
-    with open(os.path.join(EVENTS_DIR, 'report_%s.md' % day), 'w', encoding='utf-8') as f:
+    os.makedirs(ev_dir, exist_ok=True)
+    with open(os.path.join(ev_dir, 'report_%s.md' % day), 'w', encoding='utf-8') as f:
         f.write(text)
     return text
 
