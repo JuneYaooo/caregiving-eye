@@ -50,6 +50,7 @@ mibutler/
   zones.py                  区域标定读取、点在多边形、误报格子
   config.py                 读取 .env
 scripts/
+  （AI 回顾 skill 在 .claude/skills/home-review/：一页时间线 day_digest.py、画面比对 scene_diff.py）
   fall_gcn/                 跌倒骨架模型：下载数据、提取关键点、训练、试跑（需要 PyTorch，运行时不需要）
   windows/                  Windows 辅助：start_stack.bat、install_autostart.ps1、install_firewall.ps1
 docs/                       文档
