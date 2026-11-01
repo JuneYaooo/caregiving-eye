@@ -27,20 +27,22 @@ FIRE_EVERY = {IDLE: 5.0, WATCH: 3.0, ALERT: 2.0}
 def roster(app):
     """返回本次启用的任务列表；可选能力没加载时对应任务不排班"""
     a = lambda fn: partial(fn, app)
-    has_persons = lambda c: bool(c.persons)
+    # active：动过的人形（含没关键点的入侵者）；people：合格的人。静物（雕像、挂衣）两者都不算
+    has_active = lambda c: bool(c.active)
+    has_people = lambda c: bool(c.people)
     zones_ok = lambda c: c.zones_valid
-    quiet = lambda c: c.level == IDLE and not c.tracks
+    quiet = lambda c: c.level == IDLE and not c.active and not c.pets
 
     R = [
         #    名称           函数                       间隔          优先级 车道   触发      模式           条件
         Task('watchdog',    a(sense.watchdog),         10,           0, 'cpu', desc='断流 / 线程挂掉自动恢复'),
         Task('motion',      a(sense.motion),           0.2,          0, 'cpu', desc='帧差判断动静，决定警觉等级'),
         Task('detect',      a(sense.detect),           DETECT_EVERY, 1, 'cpu', desc='人 / 猫狗检测 + 跟踪'),
-        Task('pose',        a(sense.pose),             None,         1, 'cpu', 'detect', when=has_persons,
-             desc='有人才跑姿态：跌倒、久卧'),
+        Task('pose',        a(sense.pose),             None,         1, 'cpu', 'detect', when=has_active,
+             desc='有人动过才研判姿态：跌倒、久卧'),
         Task('audio',       a(sense.audio_events),     0.25,         2, 'cpu', desc='取出声音事件'),
-        Task('intrusion',   a(safety.intrusion),       None,         2, 'cpu', 'detect', (AWAY, PET), has_persons),
-        Task('illness',     a(care.illness),           None,         3, 'cpu', 'detect', (HOME, NIGHT), has_persons),
+        Task('intrusion',   a(safety.intrusion),       None,         2, 'cpu', 'detect', (AWAY, PET), has_active),
+        Task('illness',     a(care.illness),           None,         3, 'cpu', 'detect', (HOME, NIGHT), has_active),
         Task('incidents',   lambda c: app.incidents.tick(), 5,       3, 'cpu', desc='催办与结案'),
         Task('zones',       a(care.person_zones),      None,         4, 'cpu', 'detect', when=zones_ok),
         Task('pet_zones',   a(pets.pet_zones),         None,         4, 'cpu', 'detect', when=zones_ok),
@@ -60,10 +62,10 @@ def roster(app):
                       desc='闲时 5 秒一次，有可疑立刻加密到 0.5 秒'))
     if app.child:
         R.append(Task('child', a(care.child), None, 3, 'cpu', 'detect',
-                      when=lambda c: bool(c.persons) and c.zones_valid))
+                      when=lambda c: bool(c.people) and c.zones_valid))
     if app.fusion:
         R.append(Task('fall_pending', a(sense.fall_pending), 1, 1, 'cpu',
-                      when=lambda c: bool(app.fusion.pending) and not c.persons,
+                      when=lambda c: bool(app.fusion.pending) and not c.active,
                       desc='跌倒待定的人离开画面后照样给出结论'))
     if app.routine:
         R.append(Task('routine', a(care.routine), 600, 7, 'cpu', desc='作息偏离：起床晚、活动少、夜里多动'))

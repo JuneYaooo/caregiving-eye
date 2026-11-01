@@ -27,16 +27,16 @@ def illness(app, c):
 
 
 def child(app, c):
-    info = [(t, c.kpts.get(t.tid), c.posture.get(t.tid, 'unknown')) for t in c.persons]
+    info = [(t, c.kpts.get(t.tid), c.posture.get(t.tid, 'unknown')) for t in c.people]
     for lvl, et, text in app.child.update(info, c.zones, c.W, c.H, time.time(), in_poly):
         app.signal(et, lvl, text, pt=None)
     app.child.forget(set(app.tracker.tracks))
 
 
 def person_zones(app, c):
-    """卫生间久滞、夜间离开卧室"""
+    """卫生间久滞、夜间离开卧室（只看合格的人：雕像、挂衣不会“久滞”）"""
     now = time.time()
-    for t in c.persons:
+    for t in c.people:
         for z in c.zones.get('bathroom_zones', []):
             key = (t.tid, z['name'])
             if in_poly(t.center(), z['poly']):
@@ -49,9 +49,9 @@ def person_zones(app, c):
     for key in list(c.zone_enter):
         if key[0] not in app.tracker.tracks:      # 目标已被跟踪器丢弃
             c.zone_enter.pop(key)
-    if c.mode == NIGHT and c.persons and c.zones.get('bedroom_zones'):
-        if not any(in_poly(t.center(), z['poly']) for t in c.persons for z in c.zones['bedroom_zones']):
-            app.signal('night_wander', 'GUARD', '夜间检测到有人在卧室外活动。', pt=c.persons[0].center())
+    if c.mode == NIGHT and c.people and c.zones.get('bedroom_zones'):
+        if not any(in_poly(t.center(), z['poly']) for t in c.people for z in c.zones['bedroom_zones']):
+            app.signal('night_wander', 'GUARD', '夜间检测到有人在卧室外活动。', pt=c.people[0].center())
 
 
 def routine(app, c):

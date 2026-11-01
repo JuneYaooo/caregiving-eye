@@ -100,6 +100,9 @@ api:
 rtsp:
   listen: "127.0.0.1:8554"
 
+webrtc:
+  listen: "127.0.0.1:8555"   # 不写这段时 go2rtc 默认监听所有网卡
+
 xiaomi:
   "YOUR_USER_ID": "YOUR_PASS_TOKEN"
 
@@ -110,7 +113,7 @@ streams:
 
 `YOUR_USER_ID` 与 `YOUR_PASS_TOKEN` 来自 `mi_creds.json`；后者是 `passToken`，不是 `serviceToken`。`YOUR_CAMERA_IP`、`YOUR_DEVICE_ID` 和 `YOUR_CAMERA_MODEL` 按设备清单填写，`cn` 表示国内区。配置结构参考 [上游示例](https://github.com/SincereXIA/xiaomi-onvif/blob/main/examples/xiaomi-onvif/go2rtc.yaml)。
 
-`.env` 不会自动生成或同步 `go2rtc.yaml`，更换设备或凭据时要同步检查两处。此配置仅监听本机；接入其他机器上的 NVR 前需另行配置可信网络访问。
+`.env` 不会自动生成或同步 `go2rtc.yaml`，更换设备或凭据时要同步检查两处。此配置仅监听本机；接入其他机器上的 NVR 前需另行配置可信网络访问。注意 go2rtc 的 1984 管理接口没有密码，且能读到含 `passToken` 的配置，不要把它改成 `0.0.0.0`。
 
 ### 启动视频与云台桥
 
@@ -231,7 +234,7 @@ Copy-Item zones.example.json zones.json
 
 ### 查看事件与日报
 
-执事默认将每条提醒写入 `events/alerts.jsonl`，结案的事件写入 `events/incidents.jsonl`（含持续时长、是否确认、快照与录像）。主人回复的“没事”记录在 `events/feedback.jsonl`，用于学习误报位置。重要事件会保存快照 `snap_*.jpg`，跌倒、入侵、火情、突发不适、儿童危险还会保存事件前后的短视频 `events/clips/clip_*.mp4`，路径记录在事件的 `clip` 字段。查看本地记录无需配置机器人。执事运行时会在本机开一个指令入口 `http://127.0.0.1:8766/command`（端口见 `COMMAND_PORT`），机器人把主人的回复 POST 到这里即可；也可以直接运行 `python main.py cmd 没事`。回复 `属实` 表示确认是真事件。
+执事默认将每条提醒写入 `events/alerts.jsonl`，结案的事件写入 `events/incidents.jsonl`（含持续时长、是否确认、快照与录像）。主人回复的“没事”记录在 `events/feedback.jsonl`，用于学习误报位置。重要事件会保存快照 `snap_*.jpg`，跌倒、入侵、火情、突发不适、儿童危险还会保存事件前后的短视频 `events/clips/clip_*.mp4`，路径记录在事件的 `clip` 字段。查看本地记录无需配置机器人。执事运行时会在本机开一个指令入口 `http://127.0.0.1:8766/command`（端口见 `COMMAND_PORT`），机器人把主人的回复 POST 到这里即可，请求头需带 `X-Butler-Token`（值在仓库根目录自动生成的 `.command_token`，或 `.env` 的 `COMMAND_TOKEN`）；也可以直接运行 `python main.py cmd 没事`。回复 `属实` 表示确认是真事件。
 
 ```powershell
 # 汇总今天的事件与活动

@@ -26,6 +26,7 @@ mibutler/
     upkeep.py               磁盘清理、日志轮转、心跳文件
     supervisor.py           守护：拉起 go2rtc / 云台桥 / 执事，崩溃或卡死自动重启并通报
   abilities/                能力：每个模块只做一种判断，返回结果，不直接发通知
+    presence.py             谁算人：动过 + 关键点可信 + 不在家具格；换编号继承；全系统统一口径
     fall.py                 姿态状态机、家具化过滤、跌倒样本库
     fall_gcn.py             ST-GCN 骨架时序跌倒分类 + 与规则的并联研判
     illness.py              突发不适多信号合并
@@ -93,5 +94,6 @@ flowchart LR
 | `status.json` | 心跳，每 30 秒更新 |
 | `activity_<pet|person>_YYYYMMDD.json`、`heatmap_*.npy` | 活动统计，作息对比用，保留 400 天 |
 | `snap_*.jpg`、`clips/clip_*.mp4` | 快照与录像，保留 `RETAIN_DAYS` 天 |
+| `furniture_cells.json` | 家具格子记忆（静物常驻的位置，6 小时衰减） |
 | `samples/fall_*.npz` + `.json` | 跌倒样本（只有关键点坐标）与确认标签 |
 | `logs/*.log` | 守护模式下各进程的输出 |

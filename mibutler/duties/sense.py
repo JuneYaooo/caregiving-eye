@@ -44,57 +44,84 @@ def motion(app, c):
     c.motion_seq = seq
     app.gate.update(frame, ts)
     now = time.time()
-    c.level = app.level.update(now, now - app.gate.last_motion < 10, bool(c.persons),
+    c.level = app.level.update(now, now - app.gate.last_motion < 10, bool(c.active),
                                app.incidents.highest_open() >= RANK['GUARD'])
     c.zones_valid = app.ptz.zones_valid and app.view.aligned
 
 
-def detect(app, c):
-    """人 / 猫狗检测 + 跟踪，顺便更新值班模式"""
-    frame, ts, seq = app.frames.latest()
-    if frame is None or seq == c.frame_seq:
-        return
-    c.frame, c.frame_ts, c.frame_seq = frame, ts, seq
-    c.H, c.W = frame.shape[:2]
-    dets = [d for d in app.det(frame)
-            if (d['cls'] == PERSON and d['score'] > FALL_CFG['min_score'])
-            or (d['cls'] in (CAT, DOG) and d['score'] > PET_MIN_SCORE)]
-    c.tracks = app.tracker.update(dets, ts)
-    c.persons = [t for t in c.tracks if t.cls == PERSON]
-    for t in c.persons:   # 家具格子记忆: 按检测位置累计 (含未合格 track, 静物信号正来自它们)
-        try:
-            from mibutler.app import furniture_acc
-            app.t_furniture[t.tid] = furniture_acc(app, t.center(), c.W, c.H, ts)
-        except Exception:
-            app.t_furniture[t.tid] = False
-    c.pets = [t for t in c.tracks if t.cls in (CAT, DOG)]
-    qualified = [t for t in c.persons if t.tid in app.qualified]
-    c.mode = app.butler.update_presence(bool(qualified), only_pets=bool(c.pets) and not c.persons,
-                                           count=len(qualified))
-    if qualified:
-        c.last_person_ts = c.person_seen_ts = ts
-    c.det_seq += 1
+PET_DETECT_SEC = float(cfg('PET_DETECT_SEC', 3))
 
 
-def pose(app, c):
-    """有人才跑姿态：站 / 坐 / 躺、跌倒、倒地久卧；骨架模型打分；跌倒样本缓存"""
-    pose_dets = app.pose(c.frame, 0.3) if app.pose else []
-    c.kpts, c.posture = {}, {}
-    probs = {}
-    for t in c.persons:
+def _match_kpts(tracks, pose_dets):
+    """跟踪目标 ↔ 姿态结果（IoU 最大者）；返回 tid -> kpts 或 None"""
+    out = {}
+    for t in tracks:
         best, bi = None, 0.2
         for p in pose_dets:
             i = SimpleTracker._iou(t.bbox, p['bbox'])
             if i > bi:
                 best, bi = p, i
-        moved = app.mobility.update(t.tid, t.center(), c.W)
-        k = best.get('kpts') if best else None
-        kpts_ok = bool(k) and sum(1 for p in k if p[2] > 0.3) >= 2
-        if moved and (kpts_ok or app.pose is None) and app.t_furniture.get(t.tid, False) is not True:
-            app.qualified.add(t.tid)   # 人形资格: 自己动过 + 关键点可信 + 不在家具格
+        out[t.tid] = best.get('kpts') if best else None
+    return out
+
+
+def detect(app, c):
+    """人 / 猫狗检测 + 跟踪 + “谁算人”，顺便更新值班模式
+
+    省算力：画面里有动过的人形时，直接用姿态模型找人（它同时给出人框和关键点），不再先跑一遍检测模型；
+    猫狗检测降到每 PET_DETECT_SEC 秒一次（宠物模式下每次都跑）。没人动的时候只跑检测模型。"""
+    frame, ts, seq = app.frames.latest()
+    if frame is None or seq == c.frame_seq:
+        return
+    c.frame, c.frame_ts, c.frame_seq = frame, ts, seq
+    c.H, c.W = frame.shape[:2]
+    use_pose = app.pose is not None and bool(c.active)
+    raw = None
+    if use_pose:
+        person_dets = [d for d in app.pose(frame, 0.3) if d['score'] > FALL_CFG['min_score']]
+    else:
+        raw = app.det(frame)
+        person_dets = [d for d in raw if d['cls'] == PERSON and d['score'] > FALL_CFG['min_score']]
+    if raw is None and (c.mode == PET or ts - c.pet_det_ts >= PET_DETECT_SEC):
+        raw = app.det(frame)
+    c.pets_fresh = raw is not None
+    if raw is not None:
+        c.pet_det_ts = ts
+        c.pets = app.pet_tracker.update([d for d in raw if d['cls'] in (CAT, DOG) and d['score'] > PET_MIN_SCORE], ts)
+
+    c.persons = app.tracker.update(person_dets, ts)
+    c.tracks = c.persons + c.pets
+    c.kpts_raw = _match_kpts(c.persons, person_dets) if use_pose else {}
+    if app.pose is None:
+        kpts_ok = {t.tid: True for t in c.persons}
+    elif use_pose:
+        kpts_ok = {tid: bool(k) and sum(1 for p in k if p[2] > 0.3) >= 2 for tid, k in c.kpts_raw.items()}
+    else:
+        kpts_ok = {}     # 本轮没跑姿态：资格不变
+    c.active, c.people = app.persons.update(c.persons, kpts_ok, c.W, c.H, ts, in_rest=app.in_rest)
+    app.mobility.forget(set(app.tracker.tracks))
+
+    if c.people:
+        c.last_person_ts = c.person_seen_ts = ts
+        if ts - c.people_frame_ts > 2:       # 留一张有人的画面，离家通报配图用
+            c.people_frame, c.people_frame_ts = frame, ts
+    c.mode = app.butler.update_presence(bool(c.people), only_pets=bool(c.pets) and not c.people,
+                                        count=len(c.people), evidence=app.presence_evidence)
+    c.det_seq += 1
+
+
+def pose(app, c):
+    """动过的人形：站 / 坐 / 躺、跌倒、倒地久卧；骨架模型打分；跌倒样本缓存
+    关键点在 detect 里随人框一起拿到，这里不再单独跑姿态模型。"""
+    c.kpts, c.posture = {}, {}
+    probs = {}
+    for t in c.active:
+        if t.tid not in c.kpts_raw:
+            continue    # 本轮刚从检测切到姿态，下一轮才有关键点
+        k = c.kpts_raw[t.tid]
         evt = app.posture.update(t.tid, k, t.bbox, c.frame_ts)
         c.kpts[t.tid], c.posture[t.tid] = k, app.posture.state(t.tid)
-        if not moved:
+        if not app.mobility.moved(t.tid):
             continue    # 家具化：没自己动过的人形不参与跌倒 / 久卧判断，也不喂骨架分类器
         c.centers[t.tid] = t.center()
         app.samples.push(t.tid, c.frame_ts, k)
@@ -114,7 +141,6 @@ def pose(app, c):
 
     alive = set(app.tracker.tracks)
     app.posture.forget(alive)
-    app.mobility.forget(alive)
     app.samples.forget(alive)
     pending = set()
     if app.fall_clf:

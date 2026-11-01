@@ -23,8 +23,14 @@ UA = {'User-Agent': 'Android-7.1.1-1.0.0-ONEPLUS A3010-136-QNSQ/1.0.0 MICloud/1.
 
 
 def save_creds(creds):
-    with open(creds_path(), 'w', encoding='utf-8') as f:
+    # 仅本人可读写（passToken 长期有效，泄露等于把摄像头交出去）
+    fd = os.open(creds_path(), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
         json.dump(creds, f, ensure_ascii=False, indent=2)
+    try:
+        os.chmod(creds_path(), 0o600)    # 文件已存在时 os.open 不改权限
+    except OSError:
+        pass
     print('creds saved -> mi_creds.json (此文件在 .gitignore 中, 勿提交)')
 
 

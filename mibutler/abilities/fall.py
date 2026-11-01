@@ -124,14 +124,25 @@ class MobilityFilter:
 
     def update(self, tid, center, W):
         cx, cy = center
-        m = self.seen.setdefault(tid, {'ax': cx, 'ay': cy, 'jumps': 0})
+        m = self.seen.setdefault(tid, {'ax': cx, 'ay': cy, 'jumps': 0, 'x0': cx, 'y0': cy, 'span': 0.0})
         if abs(cx - m['ax']) + abs(cy - m['ay']) > self.th * W:
             m['ax'], m['ay'] = cx, cy
             m['jumps'] += 1
+        m['span'] = max(m['span'], abs(cx - m['x0']) + abs(cy - m['y0']))
         return m['jumps'] >= self.jumps_needed
 
     def moved(self, tid):
         return self.seen.get(tid, {}).get('jumps', 0) >= self.jumps_needed
+
+    def span(self, tid):
+        """离第一次出现位置最远走了多远（像素），用来区分“走过路的人”和“原地抖动的静物”"""
+        return self.seen.get(tid, {}).get('span', 0.0)
+
+    def mark_moved(self, tid, center):
+        """换编号继承：新编号直接视为动过"""
+        cx, cy = center
+        m = self.seen.setdefault(tid, {'ax': cx, 'ay': cy, 'jumps': 0, 'x0': cx, 'y0': cy, 'span': 0.0})
+        m['jumps'] = max(m['jumps'], self.jumps_needed)
 
     def forget(self, alive_tids):
         for tid in list(self.seen):

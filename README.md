@@ -256,14 +256,14 @@ scripts/            跌倒模型训练、Windows 启动与自启脚本
 
 提醒默认只写进本地记录 `events/alerts.jsonl`。如果想在手机上收到提醒，可以配合 OpenClaw、Hermes、WorkBuddy、ZCode、Claude Code、Codex 等 AI 工具，读取这个文件并转发到飞书、微信或 QQ。本项目不内置这些平台的机器人，接入方式参考 [OpenClaw 消息渠道](https://docs.openclaw.ai/channels) 和 [Hermes 消息网关](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/)，细节见 [接入指南](./docs/getting-started.md#可选飞书微信与-qq-机器人提醒)。
 
-执事运行时会在本机开一个指令入口 `http://127.0.0.1:8766/command`，只监听本机，不对局域网开放。机器人收到你的回复后转发到这里即可，也可以在命令行里直接发：
+执事运行时会在本机开一个指令入口 `http://127.0.0.1:8766/command`，只监听本机，不对局域网开放，并且必须带口令：首次启动时自动生成在仓库根目录的 `.command_token`（已被 Git 忽略），也可以在 `.env` 里用 `COMMAND_TOKEN` 指定。这样你打开的网页无法偷偷发“是我”“静音”把提醒关掉。机器人收到你的回复后带上口令转发到这里即可，也可以在命令行里直接发（会自动带口令）：
 
 ```powershell
 python main.py cmd 没事        # 记为误报，同一位置误报多了会自动降级
 python main.py cmd 收到        # 停止催办
 python main.py cmd 属实        # 确认是真事件（跌倒样本会标为真跌倒，用于再训练）
 python main.py cmd 是我        # 解除入侵提醒，切到在家照护
-curl -d "状态" http://127.0.0.1:8766/command
+curl -H "X-Butler-Token: $(cat .command_token)" -d "状态" http://127.0.0.1:8766/command
 ```
 
 其他指令：`看看`（立即抓拍）、`静音2小时`、`模式 away`、`日报`。端口由 `.env` 里的 `COMMAND_PORT` 设置，设为 `0` 则关闭入口。

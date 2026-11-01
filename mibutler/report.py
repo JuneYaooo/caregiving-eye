@@ -21,8 +21,9 @@ TYPE_CN = {
     'pet_distress': '宠物嘶叫', 'pet_unseen': '宠物久未出现', 'mode_change': '模式切换',
     'fall_suspect': '疑似跌倒', 'routine_late': '起床偏晚', 'routine_low': '活动偏少',
     'routine_night': '夜间活动偏多', 'view_shift': '镜头偏离标定位置', 'stream_down': '画面中断',
-    'supervisor': '执事重启',
+    'supervisor': '执事重启', 'arrival': '有人回来', 'departure': '人都出门',
 }
+PRESENCE_TYPES = ('arrival', 'departure')
 
 
 def _load(day, kind, events_dir):
@@ -80,7 +81,7 @@ def daily_report(day=None, events_dir=None):
     by_type = {}
     for e in evs:
         k = e.get('type', e.get('level'))
-        if k != 'mode_change':
+        if k != 'mode_change' and k not in PRESENCE_TYPES:
             by_type[k] = by_type.get(k, 0) + 1
     if by_type:
         lines.append('## 事件')
@@ -94,6 +95,14 @@ def daily_report(day=None, events_dir=None):
                 lines.append('- %s %s%s' % (e['ts'][11:16], e['text'], extra))
     else:
         lines.append('全天没有需要提醒的事件。')
+
+    moves = [e for e in evs if e.get('type') in PRESENCE_TYPES]
+    if moves:
+        lines += ['', '## 进出']
+        for e in moves:
+            text = e['text'].split(' ', 1)[-1]
+            lines.append('- %s %s%s' % (e['ts'][11:16], text,
+                                        '（快照 %s）' % e['snapshot'] if e.get('snapshot') else ''))
 
     base = os.path.join(ev_dir, 'base_%s.jpg' % day)
     for kind, label in (('pet', '宠物'), ('person', '家人')):

@@ -11,8 +11,9 @@ from mibutler.config import cfg
 def activity(app, c):
     """宠物 / 家人的热力图、活跃时长、区域停留、按小时分布"""
     now = time.time()
-    app.pet_log.update(c.pets, c.zones, c.W, c.H, now, in_poly)
-    app.person_log.update(c.persons, c.zones, c.W, c.H, now, in_poly)
+    if c.pets_fresh:     # 猫狗不是每轮都检测，只在本轮检测过时记录
+        app.pet_log.update(c.pets, c.zones, c.W, c.H, now, in_poly)
+    app.person_log.update(c.people, c.zones, c.W, c.H, now, in_poly)   # 只记合格的人，静物不污染作息基线
 
 
 def save(app, c):
@@ -57,7 +58,7 @@ def base_image(app, c):
 
 
 def ptz_return(app, c):
-    app.ptz.maybe_return(target_present=bool(c.persons))
+    app.ptz.maybe_return(target_present=bool(c.active))
 
 
 def view_check(app, c):

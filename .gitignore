@@ -5,6 +5,7 @@ mi_devices.json
 mi_login_full.json
 mi_2fa_state.json
 notif_url.txt
+.command_token
 
 # ===== 运行产物 =====
 events/

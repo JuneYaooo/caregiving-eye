@@ -2,7 +2,7 @@
 """米执事本体: 值班模式引擎 + 通报话术 + 推送 + 指令
 由 app.py 组装、duties/ 里的任务通过研判层调用；也可独立 import 用于发日报 / 接收指令。
 """
-import json, os, queue, time, threading
+import hmac, json, os, queue, secrets, time, threading
 import urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from mibutler.config import cfg, ROOT
@@ -38,6 +38,8 @@ class Butler:
         self.name = cfg('BUTLER_NAME', '米执事')
         self.owner = cfg('OWNER_TITLE', '老爷')
         self.webhook = cfg('ALERT_WEBHOOK', '')
+        if self.webhook and not self.webhook.lower().startswith('https://'):
+            print('[butler] 警告：ALERT_WEBHOOK 不是 https 地址，提醒内容会明文经过网络')
         self.events_path = events_path or os.path.join(ROOT, 'events', 'alerts.jsonl')
         os.makedirs(os.path.dirname(self.events_path), exist_ok=True)
         self.mode = HOME
@@ -47,6 +49,9 @@ class Butler:
         self.person_since = None         # 有人出现的起始时间
         self.away_after_sec = float(cfg('AWAY_DELAY_SEC', 600))  # 无人多久进入 AWAY
         self.person_absent_since = None
+        self.depart_confirm_sec = float(cfg('DEPART_CONFIRM_SEC', 60))  # 连续多久没看到人才算离开
+        self._spell_start = None         # 本次在场的起点（短暂漏检后接着算）
+        self._depart_pending = False
         self.schedule = self._parse_schedule(cfg('MODE_SCHEDULE', ''))
         self._lock = threading.Lock()    # 多个线程可能同时通报
         self.incidents = None            # 由大脑注入：事件研判层
@@ -92,28 +97,37 @@ class Butler:
                 return mode
         return None
 
-    def update_presence(self, person_present, only_pets=False, count=0, now=None):
-        """感知层每帧调用: 依据在场情况自动切模式 (带迟滞) + 进出事件"""
+    def update_presence(self, person_present, only_pets=False, count=0, now=None, evidence=None):
+        """感知层每次检测后调用: 依据在场情况自动切模式 (带迟滞) + 进出事件
+        evidence(kind) -> 快照路径，只在真要通报进出时才调用（kind = 'arrival' / 'departure'）"""
         now = now or time.time()
+        snap = lambda kind: evidence(kind) if evidence else None
         # 先记录在场 / 离场时间，指令和日程生效期间也要记，否则结束后无法判断离家多久
         if person_present:
             first_back = self.person_since is None and self.person_absent_since is not None
             gap = (now - self.person_absent_since) if self.person_absent_since else 0
-            self.person_since = self.person_since or now
+            if first_back and gap <= self.depart_confirm_sec and self._spell_start:
+                self.person_since = self._spell_start   # 短暂没看到（遮挡、漏检）不算离开，接着算
+            else:
+                self.person_since = self.person_since or now
             self.person_absent_since = None
-            # 进出事件: 空置超过60秒后有人出现 → 有人回来了 (无人值守模式交给入侵告警)
-            if first_back and gap > 60 and self.mode != AWAY:
+            self._depart_pending = False
+            # 进出事件: 空置超过 60 秒后有人出现 → 有人回来了 (无人值守模式交给入侵告警)
+            if first_back and gap > self.depart_confirm_sec and self.mode != AWAY:
                 self.notify('INFO', '有人回来了，当前在家 %d 人。' % max(count, 1),
-                            event_type='arrival', cooldown=0)
+                            event_type='arrival', cooldown=0, snapshot=snap('arrival'))
         else:
-            just_left = self.person_since is not None
-            spell = (now - self.person_since) if self.person_since else 0
+            if self.person_since is not None:          # 刚刚看不到人
+                self._spell_start = self.person_since
+                self._depart_pending = now - self.person_since > 120
             self.person_absent_since = self.person_absent_since or now
             self.person_since = None
-            # 进出事件: 在场持续超过2分钟后人全离开 → 通报离家
-            if just_left and spell > 120:
-                self.notify('INFO', '人都出门了，%g 分钟后进入无人值守。'
-                            % (self.away_after_sec / 60), event_type='departure')
+            # 进出事件: 在场超过 2 分钟、之后连续 60 秒都没看到人 → 通报离开（防漏检一帧就报“出门”）
+            if self._depart_pending and now - self.person_absent_since >= self.depart_confirm_sec:
+                self._depart_pending = False
+                left = max(self.away_after_sec - (now - self.person_absent_since), 0)
+                self.notify('INFO', '人都出门了，约 %g 分钟后进入无人值守。' % round(left / 60, 1),
+                            event_type='departure', snapshot=snap('departure'))
         if now < self.manual_until:
             return self.mode
         sched = self._scheduled_mode(now)
@@ -239,13 +253,15 @@ class Butler:
     # ---------- 指令入口（本机 HTTP）----------
     def start_command_server(self, port=None, host='127.0.0.1'):
         """在本机开一个很小的 HTTP 入口，机器人或脚本把主人的回复转进来：
-             curl -d "没事" http://127.0.0.1:8766/command
+             curl -H "X-Butler-Token: $(cat .command_token)" -d "没事" http://127.0.0.1:8766/command
              python main.py cmd 没事
-           只监听 127.0.0.1，不对局域网开放。COMMAND_PORT=0 关闭。"""
+           只监听 127.0.0.1，不对局域网开放；必须带口令（.env 的 COMMAND_TOKEN，或自动生成的
+           .command_token 文件），防止你打开的网页偷偷发“是我”“静音”关掉提醒。COMMAND_PORT=0 关闭。"""
         port = int(cfg('COMMAND_PORT', 8766) if port is None else port)
         if port <= 0:
             return None
         butler = self
+        token = command_token(create=True)
 
         class H(BaseHTTPRequestHandler):
             def _reply(self, code, text):
@@ -265,11 +281,20 @@ class Butler:
                     return self._reply(500, '指令出错：%s' % e)
                 self._reply(200, r if r is not None else '没听懂这条指令。')
 
+            def _allowed(self):
+                """挡住网页和 DNS 重绑定：浏览器发不出自定义请求头（会被 CORS 预检拦下），
+                重绑定时 Host 不是 127.0.0.1；本机其他程序没有口令文件也发不了"""
+                host = (self.headers.get('Host') or '').split(':')[0]
+                if host not in ('127.0.0.1', 'localhost') or self.headers.get('Origin'):
+                    return False
+                return hmac.compare_digest(self.headers.get('X-Butler-Token') or '', token)
+
             def do_GET(self):
-                q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                self._handle((q.get('text') or [''])[0])
+                self._reply(405, '请用 POST，并带上 X-Butler-Token 请求头（见 .command_token）。')
 
             def do_POST(self):
+                if not self._allowed():
+                    return self._reply(403, 'forbidden')
                 n = int(self.headers.get('Content-Length') or 0)
                 raw = self.rfile.read(min(n, 4096)).decode('utf-8', 'replace')
                 if raw.lstrip().startswith('{'):
@@ -292,10 +317,32 @@ class Butler:
         return srv
 
 
+TOKEN_FILE = os.path.join(ROOT, '.command_token')
+
+
+def command_token(create=False):
+    """指令口令：优先 .env 的 COMMAND_TOKEN；否则读 / 生成仓库根目录的 .command_token（仅本人可读）"""
+    t = (cfg('COMMAND_TOKEN', '') or '').strip()
+    if t:
+        return t
+    try:
+        with open(TOKEN_FILE, encoding='utf-8') as f:
+            t = f.read().strip()
+    except OSError:
+        t = ''
+    if not t and create:
+        t = secrets.token_urlsafe(24)
+        fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(t)
+    return t
+
+
 def send_command(text, port=None):
     """把一条指令发给正在运行的执事，返回执事的回答"""
     port = int(port or cfg('COMMAND_PORT', 8766))
     req = urllib.request.Request('http://127.0.0.1:%d/command' % port, data=text.encode('utf-8'),
-                                 headers={'Content-Type': 'text/plain; charset=utf-8'})
+                                 headers={'Content-Type': 'text/plain; charset=utf-8',
+                                          'X-Butler-Token': command_token()})
     with urllib.request.urlopen(req, timeout=10) as r:
         return r.read().decode('utf-8')

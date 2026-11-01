@@ -8,7 +8,7 @@
 
 每项任务具体做什么，看 mibutler/duties/；调度、研判细节看 docs/brain.md。
 """
-import os, time
+import json, os, time
 from functools import partial
 import cv2
 from mibutler.config import cfg
@@ -28,6 +28,7 @@ from mibutler.abilities.child import ChildSafety
 from mibutler.abilities.illness import IllnessMonitor
 from mibutler.abilities.activity import ActivityLog
 from mibutler.abilities.fall import PostureSM, MobilityFilter, FallSamples
+from mibutler.abilities.presence import PersonGate
 from mibutler.abilities.fall_gcn import FallClassifier, FallFusion
 from mibutler.abilities.routine import RoutineMonitor
 from mibutler import duties
@@ -43,6 +44,10 @@ class Ctx:
         self.W, self.H = 1, 1
         self.det_seq = 0
         self.tracks, self.persons, self.pets = [], [], []
+        self.active, self.people = [], []  # 动过的人形 / 合格的人（见 abilities/presence.py）
+        self.pet_det_ts, self.pets_fresh = 0.0, False
+        self.people_frame, self.people_frame_ts = None, 0.0   # 最近一张有人的画面（离家通报配图）
+        self.kpts_raw = {}
         self.kpts, self.posture = {}, {}
         self.fall_ts = {}
         self.zone_enter = {}
@@ -52,27 +57,6 @@ class Ctx:
         self.zones_valid = True
         self.started = time.time()
 
-
-
-def furniture_acc(app, pt, W, H, ts):
-    """位置级家具记忆: 格子被占据超过运行时长80%(运行>=30min) → 家具格"""
-    from mibutler.zones import cell_of
-    dt = 0.0
-    if app._last_tick_ts:
-        dt = min(10.0, max(0.0, ts - app._last_tick_ts))
-    app._last_tick_ts = ts
-    app.runtime_sec += dt
-    # 12x8 细网格 (比误报学习的 6x4 更细, 避免家具格误伤真人活动区)
-    col = min(int(pt[0] / max(W, 1) * 12), 11)
-    row = min(int(pt[1] / max(H, 1) * 8), 7)
-    cell = 'f%d_%d' % (col, row)
-    app.furn_cells[cell] = app.furn_cells.get(cell, 0) + dt
-    if ts - app._last_furn_save > 60:
-        json.dump({'runtime_sec': app.runtime_sec, 'cells': app.furn_cells},
-                  open(app.furn_path, 'w', encoding='utf-8'))
-        app._last_furn_save = ts
-    occupied = app.furn_cells.get(cell, 0)
-    return app.runtime_sec >= 1800 and occupied > 0.8 * min(app.runtime_sec, 6 * 3600)
 
 
 class App:
@@ -108,18 +92,10 @@ class App:
                                     max_misses=duties.DETECT_EVERY[IDLE] * 3)
         self.posture = PostureSM()
         self.mobility = MobilityFilter.from_env(cfg)
-        self.qualified = set()   # 获得人形资格的 track id (动过 + 关键点可信)
-        # 家具格子记忆: 某格被"人形"占据超过运行时长80%(且运行>=30min) → 该格是雕像/挂衣等静物
-        self.furn_path = os.path.join(events_dir, 'furniture_cells.json') if             (events_dir := getattr(args, 'events_dir', cfg('EVENTS_DIR', 'events'))) else 'events/furniture_cells.json'
-        try:
-            _f = json.load(open(self.furn_path, encoding='utf-8'))
-            self.furn_cells = _f.get('cells', {})
-            self.runtime_sec = float(_f.get('runtime_sec', 0))
-        except Exception:
-            self.furn_cells, self.runtime_sec = {}, 0.0
-        self._last_tick_ts = None
-        self.t_furniture = {}   # tid -> 是否家具格 (每轮重算)
-        self._last_furn_save = 0.0
+        # 谁算人：动过 + 关键点可信 + 不在家具格；全系统统一口径
+        self.persons = PersonGate(self.mobility, path=os.path.join(self.ev_dir, 'furniture_cells.json'))
+        self.pet_tracker = make_tracker(cfg('TRACKER', 'iou'), fps=1,
+                                        max_misses=max(duties.DETECT_EVERY[IDLE], duties.sense.PET_DETECT_SEC) * 3)
         self.samples = FallSamples(os.path.join(self.ev_dir, 'samples'))
         self.fall_clf = FallClassifier.from_env(cfg)
         self.fusion = FallFusion.from_env(self.fall_clf, cfg) if self.fall_clf else None
@@ -176,6 +152,17 @@ class App:
         return self.incidents.signal(etype, lvl, text, subject=subject, cell=cell,
                                      evidence=self.evidence_from(c.frame))
 
+    def presence_evidence(self, kind):
+        """进出通报配图：回来时拍当前画面，离开时用最后一张有人的画面"""
+        c = self.ctx
+        frame = c.frame if kind == 'arrival' else (c.people_frame if c.people_frame is not None else c.frame)
+        if frame is None:
+            return None
+        path = os.path.join(self.ev_dir, 'snap_%s_%s.jpg' % (kind, time.strftime('%Y%m%d_%H%M%S')))
+        img = frame.copy()
+        self.sched.once('snap', lambda: cv2.imwrite(path, img), lane='io')
+        return path
+
     def in_rest(self, pt):
         c = self.ctx
         return c.zones_valid and any(in_poly(pt, z['poly']) for z in c.zones.get('rest_zones', []))
@@ -230,6 +217,7 @@ class App:
 
     def shutdown(self):
         duties.records.save(self, self.ctx)
+        self.persons.save()
         self.samples.flush(time.time(), force=True)
         if self.clips:
             self.clips.flush()
