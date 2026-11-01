@@ -199,6 +199,8 @@ flowchart LR
 
 > [!TIP]
 > 建议交给自己电脑上的本地 AI agent（如 Claude Code、Codex、OpenClaw 等）来部署：把本项目链接 `https://github.com/JuneYaooo/caregiving-eye` 发给它，它会自己读文档、检查环境、安装依赖并完成接入。整个过程需要访问本机文件、局域网摄像头和米家账号，所以要用跑在本机的 agent，不要用云端的。
+>
+> 运行 agent 的这台电脑要和摄像头连在同一个局域网（同一个路由器 / Wi-Fi）下：拉视频流、转云台、扫描摄像头 IP 都只在局域网内进行，不在同一网络时 agent 找不到摄像头。
 
 已实测设备：小米智能摄像机 3 云台版，其他机型和固件版本还需要验证。完整的接入流程按 Windows x64 + Python 3.9+ 编写。
 
