@@ -61,10 +61,17 @@ def detect(app, c):
             or (d['cls'] in (CAT, DOG) and d['score'] > PET_MIN_SCORE)]
     c.tracks = app.tracker.update(dets, ts)
     c.persons = [t for t in c.tracks if t.cls == PERSON]
+    for t in c.persons:   # 家具格子记忆: 按检测位置累计 (含未合格 track, 静物信号正来自它们)
+        try:
+            from mibutler.app import furniture_acc
+            app.t_furniture[t.tid] = furniture_acc(app, t.center(), c.W, c.H, ts)
+        except Exception:
+            app.t_furniture[t.tid] = False
     c.pets = [t for t in c.tracks if t.cls in (CAT, DOG)]
-    c.mode = app.butler.update_presence(bool(c.persons), only_pets=bool(c.pets) and not c.persons,
-                                           count=len(c.persons))
-    if c.persons:
+    qualified = [t for t in c.persons if t.tid in app.qualified]
+    c.mode = app.butler.update_presence(bool(qualified), only_pets=bool(c.pets) and not c.persons,
+                                           count=len(qualified))
+    if qualified:
         c.last_person_ts = c.person_seen_ts = ts
     c.det_seq += 1
 
@@ -82,6 +89,9 @@ def pose(app, c):
                 best, bi = p, i
         moved = app.mobility.update(t.tid, t.center(), c.W)
         k = best.get('kpts') if best else None
+        kpts_ok = bool(k) and sum(1 for p in k if p[2] > 0.3) >= 2
+        if moved and (kpts_ok or app.pose is None) and app.t_furniture.get(t.tid, False) is not True:
+            app.qualified.add(t.tid)   # 人形资格: 自己动过 + 关键点可信 + 不在家具格
         evt = app.posture.update(t.tid, k, t.bbox, c.frame_ts)
         c.kpts[t.tid], c.posture[t.tid] = k, app.posture.state(t.tid)
         if not moved:

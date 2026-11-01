@@ -53,6 +53,28 @@ class Ctx:
         self.started = time.time()
 
 
+
+def furniture_acc(app, pt, W, H, ts):
+    """位置级家具记忆: 格子被占据超过运行时长80%(运行>=30min) → 家具格"""
+    from mibutler.zones import cell_of
+    dt = 0.0
+    if app._last_tick_ts:
+        dt = min(10.0, max(0.0, ts - app._last_tick_ts))
+    app._last_tick_ts = ts
+    app.runtime_sec += dt
+    # 12x8 细网格 (比误报学习的 6x4 更细, 避免家具格误伤真人活动区)
+    col = min(int(pt[0] / max(W, 1) * 12), 11)
+    row = min(int(pt[1] / max(H, 1) * 8), 7)
+    cell = 'f%d_%d' % (col, row)
+    app.furn_cells[cell] = app.furn_cells.get(cell, 0) + dt
+    if ts - app._last_furn_save > 60:
+        json.dump({'runtime_sec': app.runtime_sec, 'cells': app.furn_cells},
+                  open(app.furn_path, 'w', encoding='utf-8'))
+        app._last_furn_save = ts
+    occupied = app.furn_cells.get(cell, 0)
+    return app.runtime_sec >= 1800 and occupied > 0.8 * min(app.runtime_sec, 6 * 3600)
+
+
 class App:
     def __init__(self, args):
         self.args = args
@@ -86,6 +108,18 @@ class App:
                                     max_misses=duties.DETECT_EVERY[IDLE] * 3)
         self.posture = PostureSM()
         self.mobility = MobilityFilter.from_env(cfg)
+        self.qualified = set()   # 获得人形资格的 track id (动过 + 关键点可信)
+        # 家具格子记忆: 某格被"人形"占据超过运行时长80%(且运行>=30min) → 该格是雕像/挂衣等静物
+        self.furn_path = os.path.join(events_dir, 'furniture_cells.json') if             (events_dir := getattr(args, 'events_dir', cfg('EVENTS_DIR', 'events'))) else 'events/furniture_cells.json'
+        try:
+            _f = json.load(open(self.furn_path, encoding='utf-8'))
+            self.furn_cells = _f.get('cells', {})
+            self.runtime_sec = float(_f.get('runtime_sec', 0))
+        except Exception:
+            self.furn_cells, self.runtime_sec = {}, 0.0
+        self._last_tick_ts = None
+        self.t_furniture = {}   # tid -> 是否家具格 (每轮重算)
+        self._last_furn_save = 0.0
         self.samples = FallSamples(os.path.join(self.ev_dir, 'samples'))
         self.fall_clf = FallClassifier.from_env(cfg)
         self.fusion = FallFusion.from_env(self.fall_clf, cfg) if self.fall_clf else None
