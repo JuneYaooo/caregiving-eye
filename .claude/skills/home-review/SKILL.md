@@ -22,8 +22,10 @@ description: 回顾米执事（caregiving-eye / mibutler）家庭看护摄像头
 | `base_<YYYYMMDD>.jpg` | 当天空房间底图 | 比较“东西有没有变” |
 | `activity_person_<日期>.json` / `activity_pet_...` | 每小时活跃度、区域停留、最早最晚出现 | 作息、活动量问题 |
 | `status.json` | 当前模式、警觉等级、画面是否在线、各档位时间占比 | “现在怎样”“系统正常吗” |
+| `household.json` | 家庭知识：静物位置、镜头覆盖、作息、光照规律、其他事实 | **每次回答前先读** |
+| `labels.jsonl` | 事后补标（误报 / 属实）和主人反馈的漏报 | 时间线脚本会自动合并 |
 
-## 两个脚本
+## 脚本
 
 ```bash
 # 一页时间线：同一件事的催办会合并成一行，并标出确认结果（主人确认误报 / 属实 / 未确认）
@@ -33,6 +35,15 @@ python .claude/skills/home-review/scripts/day_digest.py --events-dir events [--d
 python .claude/skills/home-review/scripts/scene_diff.py compare A.jpg B.jpg [--roi x1,y1,x2,y2] [--out diff.jpg]
 python .claude/skills/home-review/scripts/scene_diff.py scan   --video rec.mp4 | --images 'events/snap_*.jpg' [--step 600] [--roi ...]
 python .claude/skills/home-review/scripts/scene_diff.py bisect --video rec.mp4 --start S --end S [--roi ...] [--clock 14:00:00] [--out dir]
+```
+
+```bash
+# 家庭知识（执事会用其中的静物区，改完一分钟内生效）
+python .claude/skills/home-review/scripts/household.py --events-dir events show
+python .claude/skills/home-review/scripts/household.py --events-dir events add-object --name 石膏像 --roi 0.05,0.2,0.25,0.8 [--by ai]
+
+# 每周复盘：哪里老误报、哪些没人确认、漏报了什么 → 调整建议（只建议，不改动）
+python .claude/skills/home-review/scripts/weekly_review.py --events-dir events [--days 7]
 ```
 
 `--roi` 用 0~1 的相对坐标框出关心的区域（比如餐桌），只比这块，其他地方有人走动也不受影响。
@@ -47,6 +58,7 @@ python .claude/skills/home-review/scripts/scene_diff.py bisect --video rec.mp4 -
 | **作息/活动**：“妈起床了吗”“今天活动多吗” | 读 `activity_person_*.json`：`morning_first`、`hourly_active`、区域停留 | 任何图片 |
 | **某个时刻**：“下午 3 点家里怎样” | 找最近的快照或进出记录；没有就直说当时没有画面留存，并提示去米家 App 回放 | 拿相邻图片去推测 |
 | **现在**：“现在家里怎么样” | `python main.py cmd 状态`，再 `python main.py cmd 看看`（立即抓拍）后看图 | 读历史记录 |
+| **复盘 / 调优**：“这周怎么样”“怎么让它更准” | `weekly_review.py` → 逐条讲建议，主人同意后再执行（见“越用越准”） | 自作主张改配置 |
 | **系统问题**：“为什么没报”“为什么老误报” | `status.json` 的画面在线状态、`level_share`；时间线里的 `system` 行（断流、模式切换、镜头偏移）；同一位置反复出现的同类提醒 | 看图 |
 
 ### 由粗到细找变化
@@ -66,6 +78,27 @@ python .claude/skills/home-review/scripts/scene_diff.py bisect --video rec.mp4 -
 - `未确认` 不等于发生过，`主人确认误报` 就是误报。不要把未经确认的急报当成事实讲给用户。
 - 画面中断（`stream_down`）、镜头偏移（`view_shift`）、执事重启（`supervisor`）期间什么都看不到。这段时间“没有提醒”不代表“没事发生”，要说清楚。
 - 摄像头只看得到一个画面。门口不在画面里时，“有人回来”的意思是“有人出现在画面里”。
+
+## 越用越准
+
+纠正如果只说在对话里就丢了，要写回系统，下次执事和 AI 才会更准。
+
+**回答前**先 `household.py show`。里面记着这个家的固定情况，比如“画面左侧是石膏像”“大门不在画面里”“下午三点阳光照到餐桌”。用它来解释提醒，不要再把已知的静物说成人。
+
+**主人纠正或确认时**，当场写回：
+
+| 主人说 | 执行 |
+|---|---|
+| “10:29 那条是误报” | `python main.py cmd 没事 10:29`（执事没在跑时会直接写文件，下次启动生效） |
+| “那次是真摔了” | `python main.py cmd 属实 15:44` |
+| “下午三点有人来你没报” | `python main.py cmd 漏报 15:00 有人进来没报` |
+| “那是个石膏像” | `household.py add-object --name 石膏像 --roi …`（roi 从快照上估） |
+| “门口拍不到” / “她一般六点半起” | `household.py set camera.covers_door false`、`household.py set routine.wake 06:30` |
+| 其他值得记住的情况 | `household.py add-fact '…'` |
+
+**你自己看图得出的判断**（比如“这张快照里明显是雕像”）先讲给主人，**等主人同意再写**，写 household 时加 `--by ai`。看错了而又自动写进去，会让执事在真有人的地方也不提醒，这个代价比多问一句大得多。
+
+**每周复盘**：主人问“这周怎么样”“怎么让它更准”时跑 `weekly_review.py`，逐条讲建议，主人点头的再执行。学习只会让提醒降级，不会让它消失，火情永远不降级。即使这样，静物区也要框得紧一些，不要把人常走的地方框进去。
 
 ## 回答格式
 

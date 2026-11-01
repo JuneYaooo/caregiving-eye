@@ -15,6 +15,7 @@
 
   日常
     python main.py cmd 没事                 把一条指令发给正在运行的执事
+    python main.py cmd 没事 10:29           事后补标：那条是误报（属实 / 漏报 15:00 描述 同理）
     python main.py report [YYYYMMDD]        生成日报
 """
 import argparse, os, sys, time
@@ -96,7 +97,17 @@ def cmd_report(args):
 
 def cmd_send(args):
     from mibutler.butler import send_command
-    print(send_command(' '.join(args.text)))
+    from mibutler.brain import learning
+    from mibutler.config import cfg
+    text = ' '.join(args.text)
+    try:
+        print(send_command(text))
+    except OSError:
+        # 执事没在跑：补标 / 漏报直接写文件，下次启动生效；其他指令需要执事在线
+        if learning.parse_label_command(text):
+            print(learning.apply_label_command(cfg('EVENTS_DIR', 'events'), text) + '（执事未运行，已写入记录，下次启动生效）')
+        else:
+            print('执事没有在运行（指令入口连不上）。')
 
 
 def main():

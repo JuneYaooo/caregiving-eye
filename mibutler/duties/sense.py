@@ -98,7 +98,9 @@ def detect(app, c):
         kpts_ok = {tid: bool(k) and sum(1 for p in k if p[2] > 0.3) >= 2 for tid, k in c.kpts_raw.items()}
     else:
         kpts_ok = {}     # 本轮没跑姿态：资格不变
-    c.active, c.people = app.persons.update(c.persons, kpts_ok, c.W, c.H, ts, in_rest=app.in_rest)
+    app.household.maybe_reload()
+    c.active, c.people = app.persons.update(c.persons, kpts_ok, c.W, c.H, ts, in_rest=app.in_rest,
+                                            static=lambda pt: app.household.static_at(pt, c.W, c.H))
     app.mobility.forget(set(app.tracker.tracks))
 
     if c.people:

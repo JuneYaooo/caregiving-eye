@@ -164,7 +164,8 @@ def test_statue_scene_stays_idle_and_skips_pose(tmp_path):
         gate=MotionGate(), level=AlertLevel(hold=30),
         incidents=SimpleNamespace(highest_open=lambda: 0),
         ptz=SimpleNamespace(zones_valid=True), view=SimpleNamespace(aligned=True),
-        in_rest=lambda pt: False, presence_evidence=lambda kind: None)
+        in_rest=lambda pt: False, presence_evidence=lambda kind: None,
+        household=SimpleNamespace(maybe_reload=lambda: None, static_at=lambda pt, W, H: None))
     c = Ctx({})
     import time as _t
     base = _t.time()

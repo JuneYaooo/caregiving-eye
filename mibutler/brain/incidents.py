@@ -50,7 +50,7 @@ class Incident:
                 'level': self.level, 'types': self.types, 'texts': self.texts[-5:],
                 'opened': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.opened)),
                 'duration_sec': int(now - self.opened), 'acked': self.acked,
-                'snapshot': self.snapshot, 'clip': self.clip}
+                'snapshot': self.snapshot, 'clip': self.clip, 'cells': sorted(self.cells)}
 
 
 class IncidentManager:
@@ -85,7 +85,7 @@ class IncidentManager:
         with open(self.fb_path, 'a', encoding='utf-8') as f:
             for t in set(inc.types):
                 for c in (inc.cells or {None}):
-                    rec = {'ts': now, 'type': t, 'cell': c}
+                    rec = {'ts': now, 'type': t, 'cell': c, 'incident': inc.id}
                     self.feedback.append(rec)
                     f.write(json.dumps(rec) + '\n')
 
@@ -176,13 +176,28 @@ class IncidentManager:
                 inc.acked = kind
                 if kind == 'false':
                     self._record_false(inc, now)
+        self._fire_ack(targets, kind)
+        return len(targets)
+
+    def ack_matching(self, pred, kind):
+        """按条件确认进行中的事件（事后补标“没事 10:29”时用）；返回处理了几个"""
+        now = time.time()
+        with self._lock:
+            targets = [i for i in self.open.values() if pred(i)]
+            for inc in targets:
+                if kind == 'false' and inc.acked != 'false':
+                    self._record_false(inc, now)
+                inc.acked = kind
+        self._fire_ack(targets, kind)
+        return len(targets)
+
+    def _fire_ack(self, targets, kind):
         for inc in targets:
             for fn in self.on_ack:
                 try:
                     fn(inc, kind)
                 except Exception as e:
                     print('[incident] on_ack 回调出错：', e)
-        return len(targets)
 
     def highest_open(self):
         with self._lock:

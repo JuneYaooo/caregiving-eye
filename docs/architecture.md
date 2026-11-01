@@ -22,6 +22,7 @@ mibutler/
     frames.py               拉流线程：只留最新帧，断流重连
     gate.py                 帧差动静 + 三档警觉等级
     incidents.py            事件研判：合并、升级、催办、结案、误报学习、确认回调
+    learning.py             越用越准：事后补标、漏报记录、家庭知识 household.json
     ptz.py                  云台独占与复位；ViewCheck 画面对齐检查
     upkeep.py               磁盘清理、日志轮转、心跳文件
     supervisor.py           守护：拉起 go2rtc / 云台桥 / 执事，崩溃或卡死自动重启并通报
@@ -50,7 +51,7 @@ mibutler/
   zones.py                  区域标定读取、点在多边形、误报格子
   config.py                 读取 .env
 scripts/
-  （AI 回顾 skill 在 .claude/skills/home-review/：一页时间线 day_digest.py、画面比对 scene_diff.py）
+  （AI 回顾 skill 在 .claude/skills/home-review/：时间线 day_digest.py、画面比对 scene_diff.py、家庭知识 household.py、每周复盘 weekly_review.py）
   fall_gcn/                 跌倒骨架模型：下载数据、提取关键点、训练、试跑（需要 PyTorch，运行时不需要）
   windows/                  Windows 辅助：start_stack.bat、install_autostart.ps1、install_firewall.ps1
 docs/                       文档
@@ -92,6 +93,8 @@ flowchart LR
 | `alerts.jsonl` | 每条提醒 |
 | `incidents.jsonl` | 结案的事件：持续时长、是否确认、快照与录像 |
 | `feedback.jsonl` | 主人回复“没事”的记录，用于按画面位置降级 |
+| `labels.jsonl` | 事后补标（误报 / 属实）与漏报反馈 |
+| `household.json` | 家庭知识：静物区、镜头覆盖、作息、光照规律、事实，带修改记录 |
 | `status.json` | 心跳，每 30 秒更新 |
 | `activity_<pet|person>_YYYYMMDD.json`、`heatmap_*.npy` | 活动统计，作息对比用，保留 400 天 |
 | `snap_*.jpg`、`clips/clip_*.mp4` | 快照与录像，保留 `RETAIN_DAYS` 天 |

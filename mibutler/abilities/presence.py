@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """谁算人：把“像人”的检测框筛成“家里的人”，全系统只认这一个口径
 
+主人标过的静物（events/household.json 的 static_objects）与家具格同等对待，立即生效。
+
 单帧检测只回答“这块像素像不像人”。石膏像、挂着的衣服、夜间红外噪点都会被当成人，
 如果直接拿去算警觉等级、在家人数、活动统计，就会一直停在 watch 档、算错人数、污染作息基线。
 
@@ -89,8 +91,9 @@ class PersonGate:
             self.occ[key] = self.occ.get(key, 0.0) + dt
 
     # ---------- 每次检测后调用 ----------
-    def update(self, persons, kpts_ok, W, H, ts, in_rest=lambda pt: False):
+    def update(self, persons, kpts_ok, W, H, ts, in_rest=lambda pt: False, static=lambda pt: None):
         """persons: 跟踪器输出的人形；kpts_ok: tid -> True / False / None（本轮没跑姿态，不改资格）
+        static(pt): 主人在 household.json 里标过的静物区（立即生效，不用等家具记忆攒够 30 分钟）
         返回 (active, people)"""
         dt = min(10.0, max(0.0, ts - self._last_ts)) if self._last_ts is not None else 0.0
         self._last_ts = ts
@@ -119,7 +122,7 @@ class PersonGate:
 
         for t in persons:
             tid, pt = t.tid, t.center()
-            stuck = tid not in self.walked and self.furniture(pt, W, H)
+            stuck = tid not in self.walked and (self.furniture(pt, W, H) or bool(static(pt)))
             if stuck:
                 self.qualified.discard(tid)
             elif tid not in self.qualified and self.mobility.moved(tid) and kpts_ok.get(tid):
@@ -133,7 +136,9 @@ class PersonGate:
         if ts - self._last_save > 60:
             self._last_save = ts
             self.save()
-        active = [t for t in persons if t.tid in self.qualified or self.mobility.moved(t.tid)]
+        # 静物区里没走过路的人形：即使框抖动骗过了“动过”判断，也不算活动目标（不拖住警觉等级、不跑姿态）
+        active = [t for t in persons if t.tid in self.qualified or
+                  (self.mobility.moved(t.tid) and (t.tid in self.walked or not static(t.center())))]
         people = [t for t in persons if t.tid in self.qualified]
         return active, people
 

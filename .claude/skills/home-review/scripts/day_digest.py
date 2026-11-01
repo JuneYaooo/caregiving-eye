@@ -7,6 +7,7 @@
 读取（都在 events/ 下，缺哪个跳过哪个）:
   alerts.jsonl      每条通报：时间、级别、类型、文字、快照、录像
   incidents.jsonl   结案事件：持续时长、主人是否确认（acked: false=误报 / true=属实 / ok=收到 / me=是我）
+  labels.jsonl      事后补标（覆盖当场回复）与主人反馈的漏报
   activity_person_YYYYMMDD.json / activity_pet_...   全天活动统计（没有画面）
   status.json       执事当前状态：模式、画面是否在线
 
@@ -59,6 +60,16 @@ def digest(events_dir, day, t_from=None, t_to=None):
     incidents = [i for i in read_jsonl(os.path.join(events_dir, 'incidents.jsonl'))
                  if in_window(i.get('opened'), date, t_from, t_to)]
 
+    # 事后补标（labels.jsonl）覆盖当场回复
+    labels = read_jsonl(os.path.join(events_dir, 'labels.jsonl'))
+    relabel = {}
+    for l in sorted(labels, key=lambda x: x.get('ts', 0)):
+        if l.get('incident') and l.get('kind') in ('false', 'true'):
+            relabel[l['incident']] = l['kind']
+    for i in incidents:
+        if i.get('id') in relabel:
+            i['acked'] = relabel[i['id']]
+
     # 事件的确认结果：按“开始时间 + 类型”关联回通报
     verdicts = []
     for i in incidents:
@@ -95,6 +106,13 @@ def digest(events_dir, day, t_from=None, t_to=None):
                                 ('未确认' if kind_of(t) == 'event' and a.get('level') in ('CRITICAL', 'GUARD') else None)})
     for r in rows:
         r.pop('_t_end', None)
+    for l in labels:      # 主人说“漏报”的：照样放进时间线，提醒复盘时看
+        if l.get('kind') == 'missed' and l.get('day') == date and in_window(
+                '%s %s' % (date, (l.get('when') or '00:00')[:5]), date, t_from, t_to):
+            rows.append({'start': (l.get('when') or '')[:5] + ':00', 'end': (l.get('when') or '')[:5] + ':00',
+                         'type': 'missed', 'kind': 'missed', 'level': '漏报', 'text': l.get('note') or '主人反馈漏报',
+                         'count': 1, 'evidence': [], 'verdict': '主人反馈：执事没有提醒'})
+    rows.sort(key=lambda r: r['start'])
 
     activity = {}
     for kind in ('person', 'pet'):
@@ -128,7 +146,8 @@ def digest(events_dir, day, t_from=None, t_to=None):
                    'confirmed_false': sum(1 for r in events if r['verdict'] == '主人确认误报'),
                    'confirmed_true': sum(1 for r in events if r['verdict'] == '主人确认属实'),
                    'unconfirmed_serious': sum(1 for r in events if r['verdict'] == '未确认'),
-                   'presence': sum(1 for r in rows if r['kind'] == 'presence')},
+                   'presence': sum(1 for r in rows if r['kind'] == 'presence'),
+                   'missed': sum(1 for r in rows if r['kind'] == 'missed')},
         'timeline': rows, 'activity': activity, 'status': status,
         'snapshots': media, 'clips': clips,
     }
@@ -137,8 +156,9 @@ def digest(events_dir, day, t_from=None, t_to=None):
 def to_text(d):
     L = ['# %s %s–%s' % (d['day'], *d['window'])]
     c = d['counts']
-    L.append('事件 %d 件（确认误报 %d，确认属实 %d，未确认的值守/急报 %d）；进出 %d 次'
-             % (c['events'], c['confirmed_false'], c['confirmed_true'], c['unconfirmed_serious'], c['presence']))
+    L.append('事件 %d 件（确认误报 %d，确认属实 %d，未确认的值守/急报 %d）；进出 %d 次；主人反馈漏报 %d 次'
+             % (c['events'], c['confirmed_false'], c['confirmed_true'], c['unconfirmed_serious'], c['presence'],
+                c['missed']))
     if d['status']:
         s = d['status']
         L.append('执事状态（%s）：%s，警觉 %s，画面%s' % (s.get('time'), s.get('mode_cn'), s.get('level'),

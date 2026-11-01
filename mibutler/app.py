@@ -29,6 +29,7 @@ from mibutler.abilities.illness import IllnessMonitor
 from mibutler.abilities.activity import ActivityLog
 from mibutler.abilities.fall import PostureSM, MobilityFilter, FallSamples
 from mibutler.abilities.presence import PersonGate
+from mibutler.brain.learning import Household
 from mibutler.abilities.fall_gcn import FallClassifier, FallFusion
 from mibutler.abilities.routine import RoutineMonitor
 from mibutler import duties
@@ -94,6 +95,8 @@ class App:
         self.mobility = MobilityFilter.from_env(cfg)
         # 谁算人：动过 + 关键点可信 + 不在家具格；全系统统一口径
         self.persons = PersonGate(self.mobility, path=os.path.join(self.ev_dir, 'furniture_cells.json'))
+        # 家庭知识：主人 / AI 复盘时记下的静物位置等（events/household.json，改了自动重新读）
+        self.household = Household(os.path.join(self.ev_dir, 'household.json'))
         self.pet_tracker = make_tracker(cfg('TRACKER', 'iou'), fps=1,
                                         max_misses=max(duties.DETECT_EVERY[IDLE], duties.sense.PET_DETECT_SEC) * 3)
         self.samples = FallSamples(os.path.join(self.ev_dir, 'samples'))

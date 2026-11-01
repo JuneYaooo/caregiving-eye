@@ -96,6 +96,11 @@ def daily_report(day=None, events_dir=None):
     else:
         lines.append('全天没有需要提醒的事件。')
 
+    pending = [e for e in serious if e.get('type') not in ('stream_down', 'view_shift', 'supervisor')]
+    if pending:
+        lines += ['', '帮执事变准：上面的提醒如果是误报，回复“没事 时间”（如“没事 %s”），真事件回复“属实 时间”；'
+                  '有事没提醒，回复“漏报 时间 描述”。' % pending[-1]['ts'][11:16]]
+
     moves = [e for e in evs if e.get('type') in PRESENCE_TYPES]
     if moves:
         lines += ['', '## 进出']
