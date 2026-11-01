@@ -20,6 +20,7 @@ FALL_CFG = {
     'stand_aspect_max': 0.9, 'lying_aspect_min': 1.1,
     'fall_transition_secs': 2.5, 'min_score': 0.4,
     'lying_min_secs': 30, 'lying_realert': 300,
+    'require_kpts': True,  # 跌倒/久卧告警必须关键点确认(雕像/摆件提不出可信肩髋点)
 }
 
 
@@ -62,10 +63,12 @@ class PostureSM:
     def update(self, tid, kpts, bbox, now):
         st = self.sm.setdefault(tid, {'state': 'unknown', 'cand': None, 'cand_n': 0,
                                       'last_stand_ts': now, 'lying_since': None,
-                                      'last_lying_alert': 0, 'fall_alerted': False})
+                                      'last_lying_alert': 0, 'fall_alerted': False,
+                                      'kpts_ok': False})
         if st['state'] == 'stand':
             st['last_stand_ts'] = now   # 持续站立时也要刷新，否则站久了的人跌倒永远判不出来
         angle, tlen, aspect = self._geom(kpts, bbox)
+        st['kpts_ok'] = angle is not None   # 关键点可信(肩髋都>0.3)才算"确认是人"
         new = self._state_of(angle, aspect)
         if new == st['state'] or new == 'unknown':
             st['cand'], st['cand_n'] = None, 0
@@ -80,17 +83,19 @@ class PostureSM:
                     st['fall_alerted'] = False
                 if new == 'lie':
                     st['lying_since'] = now
-                    # 跌倒判定: 近期站立 → 突然倒地
+                    # 跌倒判定: 近期站立 → 突然倒地 (必须关键点确认)
                     if prev == 'stand' and now - st['last_stand_ts'] < FALL_CFG['fall_transition_secs'] \
-                            and not st['fall_alerted']:
+                            and not st['fall_alerted'] \
+                            and (not FALL_CFG.get('require_kpts') or st['kpts_ok']):
                         st['fall_alerted'] = True
                         return 'fall'
                 else:
                     st['lying_since'] = None
-        # 倒地久卧
+        # 倒地久卧 (必须关键点确认; 纯框比例的"躺"可能是雕像/包/杂物)
         if st['state'] == 'lie' and st['lying_since'] \
                 and now - st['lying_since'] > FALL_CFG['lying_min_secs'] \
-                and now - st['last_lying_alert'] > FALL_CFG['lying_realert']:
+                and now - st['last_lying_alert'] > FALL_CFG['lying_realert'] \
+                and (not FALL_CFG.get('require_kpts') or st['kpts_ok']):
             st['last_lying_alert'] = now
             return 'lying_long'
         return None
@@ -105,11 +110,13 @@ class PostureSM:
 
 
 class MobilityFilter:
-    """家具化过滤：跟踪目标的锚点位移超过 th × 画面宽才算“动过”，动过一次就一直有告警资格"""
+    """家具化过滤：跟踪目标的锚点位移超过 th × 画面宽才算“动过”，动过一次就一直有告警资格。
+    防单次框抖动绕过：需要累计两次独立位移事件才认定“动过”（真人走动每帧都在跳，两次瞬间就有）。"""
 
-    def __init__(self, th=0.04):
+    def __init__(self, th=0.04, jumps_needed=2):
         self.th = th
-        self.seen = {}      # tid -> {'ax', 'ay', 'moved'}
+        self.jumps_needed = jumps_needed
+        self.seen = {}      # tid -> {'ax', 'ay', 'jumps'}
 
     @classmethod
     def from_env(cls, cfg):
@@ -117,13 +124,14 @@ class MobilityFilter:
 
     def update(self, tid, center, W):
         cx, cy = center
-        m = self.seen.setdefault(tid, {'ax': cx, 'ay': cy, 'moved': False})
+        m = self.seen.setdefault(tid, {'ax': cx, 'ay': cy, 'jumps': 0})
         if abs(cx - m['ax']) + abs(cy - m['ay']) > self.th * W:
-            m['ax'], m['ay'], m['moved'] = cx, cy, True
-        return m['moved']
+            m['ax'], m['ay'] = cx, cy
+            m['jumps'] += 1
+        return m['jumps'] >= self.jumps_needed
 
     def moved(self, tid):
-        return self.seen.get(tid, {}).get('moved', False)
+        return self.seen.get(tid, {}).get('jumps', 0) >= self.jumps_needed
 
     def forget(self, alive_tids):
         for tid in list(self.seen):
