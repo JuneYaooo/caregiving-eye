@@ -15,7 +15,7 @@ import cv2
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.insert(0, ROOT)
-from care_pipeline import YoloOnnx   # noqa: E402
+from mibutler.vision.yolo import YoloOnnx   # noqa: E402
 
 
 def extract(path, model, fps=10.0, crop='none'):

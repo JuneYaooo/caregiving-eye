@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 """米执事本体: 值班模式引擎 + 通报话术 + 推送 + 指令
-被 care_v2 等感知层调用; 也可独立 import 用于发日报/接收指令。
+由 app.py 组装、duties/ 里的任务通过研判层调用；也可独立 import 用于发日报 / 接收指令。
 """
 import json, os, queue, time, threading
 import urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from common_config import cfg
+from mibutler.config import cfg, ROOT
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 
 # 值班模式
 AWAY, HOME, PET, NIGHT = 'away', 'home', 'pet', 'night'
@@ -30,7 +29,7 @@ DEFAULT_COOLDOWN = {
     'child_danger': 60, 'child_danger_watched': 300, 'child_alone': 900, 'baby_cry': 300,
     # 宠物
     'cat_zone': 120, 'pet_distress': 300, 'pet_unseen': 3600,
-    'mode_change': 0,
+    'mode_change': 0, 'view_shift': 3600, 'supervisor': 0,
 }
 
 
@@ -39,7 +38,7 @@ class Butler:
         self.name = cfg('BUTLER_NAME', '米执事')
         self.owner = cfg('OWNER_TITLE', '老爷')
         self.webhook = cfg('ALERT_WEBHOOK', '')
-        self.events_path = events_path or os.path.join(HERE, 'events', 'alerts.jsonl')
+        self.events_path = events_path or os.path.join(ROOT, 'events', 'alerts.jsonl')
         os.makedirs(os.path.dirname(self.events_path), exist_ok=True)
         self.mode = HOME
         self.manual_until = 0            # 指令覆盖模式的截止时间
@@ -196,6 +195,10 @@ class Butler:
             n = self.incidents.ack('false') if self.incidents else 0
             return ('好的，%s，记为误报。同一位置多次误报后我会降低这里的提醒级别。' % self.owner
                     if n else '好的，%s，目前没有待确认的事件。' % self.owner)
+        if t in ('属实', '真的', '确实摔了', '真摔了'):
+            n = self.incidents.ack('true') if self.incidents else 0
+            return ('好的，%s，记为真实事件，已停止催促。' % self.owner if n
+                    else '目前没有待确认的事件。')
         if t in ('收到', '我去看', '知道了'):
             n = self.incidents.ack('ok') if self.incidents else 0
             return '好的，不再催促。' if n else '目前没有待确认的事件。'
@@ -216,7 +219,7 @@ class Butler:
                 return '已切换%s，4小时内不自动改。' % MODE_CN[m]
             return '可用模式: away/home/pet/night'
         if t == '日报':
-            from report import daily_report
+            from mibutler.report import daily_report
             return daily_report(events_dir=os.path.dirname(self.events_path))
         return None
 
@@ -224,7 +227,7 @@ class Butler:
     def start_command_server(self, port=None, host='127.0.0.1'):
         """在本机开一个很小的 HTTP 入口，机器人或脚本把主人的回复转进来：
              curl -d "没事" http://127.0.0.1:8766/command
-             python butler.py cmd 没事
+             python main.py cmd 没事
            只监听 127.0.0.1，不对局域网开放。COMMAND_PORT=0 关闭。"""
         port = int(cfg('COMMAND_PORT', 8766) if port is None else port)
         if port <= 0:
@@ -283,17 +286,3 @@ def send_command(text, port=None):
                                  headers={'Content-Type': 'text/plain; charset=utf-8'})
     with urllib.request.urlopen(req, timeout=10) as r:
         return r.read().decode('utf-8')
-
-
-if __name__ == '__main__':
-    import sys
-    if len(sys.argv) >= 3 and sys.argv[1] == 'cmd':
-        # 用法：python butler.py cmd 没事
-        print(send_command(' '.join(sys.argv[2:])))
-        sys.exit(0)
-    b = Butler()
-    b.notify('INFO', '%s上线，当前模式：%s。' % (b.name, MODE_CN[b.mode]))
-    print(b.handle_command('静音2小时'))
-    print(b.handle_command('模式 away'))
-    b.notify('GUARD', '客厅出现移动目标，已转向跟踪。', event_type='intrusion')
-    print('butler OK')

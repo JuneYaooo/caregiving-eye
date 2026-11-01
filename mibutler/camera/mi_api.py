@@ -103,7 +103,7 @@ class MiApi:
 
 
 def load_creds(path=None):
-    from common_config import creds_path
+    from mibutler.config import creds_path
     path = path or creds_path()
     with open(path, encoding='utf-8') as f:
         return json.load(f)

@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """执事日报：事件摘要 + 宠物 / 人活动总结 + 热力图
-用法: python report.py [YYYYMMDD]   (默认今天)
+用法: python main.py report [YYYYMMDD]   (默认今天)
 输出: events/report_YYYYMMDD.md 与 events/report_heatmap_<pet|person>_YYYYMMDD.png
 """
 import json, os, sys, time
 import numpy as np
 import cv2
-from common_config import cfg
-from abilities.pet import summarize
-from abilities.routine import RoutineMonitor
+from mibutler.config import cfg
+from mibutler.abilities.activity import summarize
+from mibutler.abilities.routine import RoutineMonitor
 
 EVENTS_DIR = cfg('EVENTS_DIR', 'events')
 
@@ -20,7 +20,8 @@ TYPE_CN = {
     'child_alone': '儿童独处', 'baby_cry': '婴儿哭声', 'cat_zone': '宠物进禁区',
     'pet_distress': '宠物嘶叫', 'pet_unseen': '宠物久未出现', 'mode_change': '模式切换',
     'fall_suspect': '疑似跌倒', 'routine_late': '起床偏晚', 'routine_low': '活动偏少',
-    'routine_night': '夜间活动偏多',
+    'routine_night': '夜间活动偏多', 'view_shift': '镜头偏离标定位置', 'stream_down': '画面中断',
+    'supervisor': '执事重启',
 }
 
 
@@ -116,7 +117,3 @@ def daily_report(day=None, events_dir=None):
     with open(os.path.join(ev_dir, 'report_%s.md' % day), 'w', encoding='utf-8') as f:
         f.write(text)
     return text
-
-
-if __name__ == '__main__':
-    daily_report(sys.argv[1] if len(sys.argv) > 1 else None)

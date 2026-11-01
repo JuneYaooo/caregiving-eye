@@ -13,8 +13,8 @@ import numpy as np
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.insert(0, ROOT)
-from care_pipeline import YoloOnnx                 # noqa: E402
-from abilities.fall_gcn import FallClassifier      # noqa: E402
+from mibutler.vision.yolo import YoloOnnx           # noqa: E402
+from mibutler.abilities.fall_gcn import FallClassifier  # noqa: E402
 from extract import extract                        # noqa: E402
 
 

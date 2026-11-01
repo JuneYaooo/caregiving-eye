@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """ONVIF 云台控制 —— 经 xiaomi-onvif 桥 -> go2rtc -> 摄像头
 重要: 云台命令必须在视频流活跃时发 (有 RTSP 消费者在拉流), 否则桥报 "no active connection"
-用法: python onvif_ptz.py right 1.0   (left/right/up/down + 秒数; stop; test)
+用法: python main.py ptz right 1.0   (left/right/up/down + 秒数; stop; test)
 """
 import sys, time, re, os
 import requests
-from common_config import cfg
+from mibutler.config import cfg
 
 BASE = cfg('ONVIF_BASE', 'http://127.0.0.1:8891')
 
@@ -54,8 +54,9 @@ def move(action, duration=1.0, speed=0.5):
     return True
 
 
-if __name__ == '__main__':
-    action = sys.argv[1] if len(sys.argv) > 1 else 'test'
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    action = argv[0] if argv else 'test'
     tok = get_profile_token()
     print('profile token:', tok)
     if action == 'test':
@@ -65,6 +66,6 @@ if __name__ == '__main__':
     elif action == 'stop':
         print(stop(tok)[:160])
     elif action in ('left', 'right', 'up', 'down'):
-        dur = float(sys.argv[2]) if len(sys.argv) > 2 else 0.8
+        dur = float(argv[1]) if len(argv) > 1 else 0.8
         move(action, dur)
         print('moved', action, dur)

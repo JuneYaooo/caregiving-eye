@@ -3,8 +3,8 @@
 
 用法:
   export MI_USER=你的账号 MI_PASS=你的密码
-  python mi_login.py            # 有缓存的 passToken 时静默续期
-  python mi_login.py --force    # 强制重新登录 (可能需要输入短信验证码)
+  python main.py login            # 有缓存的 passToken 时静默续期
+  python main.py login --force    # 强制重新登录 (可能需要输入短信验证码)
 
 说明:
   - 首次在新设备登录, 小米大概率要求二次验证 (securityStatus=16):
@@ -17,13 +17,13 @@ import argparse, hashlib, json, os, sys
 from urllib.parse import urlparse, parse_qs, unquote
 
 import requests
+from mibutler.config import creds_path
 
 UA = {'User-Agent': 'Android-7.1.1-1.0.0-ONEPLUS A3010-136-QNSQ/1.0.0 MICloud/1.0'}
 
 
 def save_creds(creds):
-    here = os.path.dirname(os.path.abspath(__file__))
-    with open(os.path.join(here, 'mi_creds.json'), 'w', encoding='utf-8') as f:
+    with open(creds_path(), 'w', encoding='utf-8') as f:
         json.dump(creds, f, ensure_ascii=False, indent=2)
     print('creds saved -> mi_creds.json (此文件在 .gitignore 中, 勿提交)')
 
@@ -110,17 +110,16 @@ def two_factor(s, user, pwd):
     return d.get('location')
 
 
-def main():
-    ap = argparse.ArgumentParser()
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog='main.py login')
     ap.add_argument('--force', action='store_true', help='忽略缓存的 passToken')
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     user = os.environ.get('MI_USER')
     pwd = os.environ.get('MI_PASS')
     assert user and pwd, '请设置 MI_USER / MI_PASS 环境变量'
 
-    here = os.path.dirname(os.path.abspath(__file__))
     cached = {}
-    cpath = os.path.join(here, 'mi_creds.json')
+    cpath = creds_path()
     if os.path.exists(cpath):
         cached = json.load(open(cpath, encoding='utf-8'))
 

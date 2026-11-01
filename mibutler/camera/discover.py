@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """局域网小米设备发现: ping 扫描 + ARP 厂商匹配 + miio 广播 (UDP 54321)
-用法: python find_camera.py
+用法: python main.py find-camera
 """
 import subprocess, socket, time, re
 import concurrent.futures as cf
-from common_config import subnets
+from mibutler.config import subnets
 
 XIAOMI_OUIS = {
     '28:6C:07','34:80:B3','34:CE:00','64:09:80','74:23:44','78:02:F8','78:11:DC',
@@ -59,13 +59,13 @@ def parse_arp():
             for m in re.finditer(r'(\d+\.\d+\.\d+\.\d+)\s+([0-9a-fA-F\-]{17})\s+', out)]
 
 
-def main():
-    subnets = subnets()
-    for sn in subnets:
+def main(argv=None):
+    nets = subnets()
+    for sn in nets:
         print('[sweep] %s.0/24 ...' % sn)
         alive = sweep(sn)
         print('[sweep] %s alive: %d' % (sn, len(alive)))
-    miio = miio_discovery([sn + '.255' for sn in subnets] + ['255.255.255.255'])
+    miio = miio_discovery([sn + '.255' for sn in nets] + ['255.255.255.255'])
     print('\n=== ARP ===')
     for ip, mac in parse_arp():
         oui = ':'.join(mac.split(':')[:3])

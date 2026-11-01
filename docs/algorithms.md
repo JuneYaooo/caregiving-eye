@@ -103,7 +103,7 @@ v0 的宽高比规则在猫干扰、侧身坐、蹲下时都会误报。升级�
 
 | 文件 | 作用 |
 | --- | --- |
-| `abilities/fall_gcn.py` | 运行时：按人缓存最近 4 秒关键点，插值成 20 帧、按身高归一化，ONNX 打分；并联研判 |
+| `mibutler/abilities/fall_gcn.py` | 运行时：按人缓存最近 4 秒关键点，插值成 20 帧、按身高归一化，ONNX 打分；并联研判 |
 | `scripts/fall_gcn/prepare_urfall.py` | 下载 UR Fall（cam0，30 跌倒 + 40 日常）并生成 `labels.csv` |
 | `scripts/fall_gcn/extract.py` | 用执事同一个 YOLOv8n-pose 把视频转成关键点序列（只存坐标） |
 | `scripts/fall_gcn/train.py` | 训练轻量 ST-GCN（约 25 万参数）并导出 `models/fall_stgcn.onnx` |
@@ -137,6 +137,10 @@ UR Fall 采用 CC BY-NC-SA 4.0（非商业），所以仓库不附带训练好�
 自家录像可以按同样格式补进 `labels.csv`（`name,fall_start,fall_end`，单位秒；日常录像两列留空），
 再加一个 `--labels` 一起训练。
 
+执事运行后会自己攒样本：每次报跌倒 / 疑似跌倒，前后约 12 秒的关键点存到 `events/samples/`，
+你回复“没事”标为误报、“属实”标为真跌倒。攒了一些以后加 `--samples events/samples` 重训，
+家里的误报动作就成了负样本（`python main.py cmd 属实` / `没事` 也可以在命令行回复）。
+
 ### 首次训练结果（UR Fall，按视频留出 20% 验证）
 
 | 项目 | 结果 |
@@ -151,7 +155,7 @@ UR Fall 采用 CC BY-NC-SA 4.0（非商业），所以仓库不附带训练好�
 
 ## P1 作息偏离（已实现）
 
-`abilities/routine.py` 读每天的 `events/activity_person_YYYYMMDD.json`，和最近 28 天同一时段比较，
+`mibutler/abilities/routine.py` 读每天的 `events/activity_person_YYYYMMDD.json`，和最近 28 天同一时段比较，
 攒满 7 天才开始对比。基线用中位数和 90 分位数，偶尔一两天的特殊情况不会把它带偏。
 全天在画面里不到 10 分钟的日子（多半不在家）不算进基线。
 
@@ -166,7 +170,7 @@ UR Fall 采用 CC BY-NC-SA 4.0（非商业），所以仓库不附带训练好�
 ## P3 云台联动
 
 - **自动跟踪**：`dx = 目标bbox中心x - 画面中心x`，超死区（±10%宽）就
-  `onvif_ptz.continuous_move(±0.3)` 脉冲式修正——即社区那篇
+  `camera/onvif.continuous_move(±0.3)` 脉冲式修正——即社区那篇
   "把摄像头变成自跟踪机器人"的思路，但走标准 ONVIF。
 - **分区巡航**：调度器按预设角度序列扫（每 ~15° 一站，驻留 4s 检测），
   见人/见猫即驻留该站直到目标离开 30s。云台命令必须在拉流中发（现有纪律）。
@@ -179,8 +183,8 @@ UR Fall 采用 CC BY-NC-SA 4.0（非商业），所以仓库不附带训练好�
 | P0-2 | 姿态状态机替换 v0 跌倒规则 | 1 天 | 真实画面校准 |
 | P0-3 | 定时器族（滞留/夜间/无人）+ zones 配置 | 0.5 天 | 无 |
 | P1-1 | go2rtc 音频轨 → YAMNet 事件 + 视听关联 | 1 天 | 无 |
-| P1-2 | 作息偏离（`abilities/routine.py`，攒满 7 天后生效） | 已完成 | P0 上线 |
-| P2 | ST-GCN 训练与并联部署（`abilities/fall_gcn.py`、`scripts/fall_gcn/`） | 已完成 | 数据集下载 |
+| P1-2 | 作息偏离（`mibutler/abilities/routine.py`，攒满 7 天后生效） | 已完成 | P0 上线 |
+| P2 | ST-GCN 训练与并联部署（`mibutler/abilities/fall_gcn.py`、`scripts/fall_gcn/`） | 已完成 | 数据集下载 |
 | P3 | 自动跟踪 + 巡航调度 | 1 天 | 无 |
 
 ## 参考

@@ -8,7 +8,8 @@
   催办   急报没人确认时，每 REMIND_SEC 秒再提醒一次，最多 MAX_REMINDS 次。
   结案   一段时间没有新信号自动结案；急报要更久才自动结案并说明。
   学习   回复“没事”记为误报。同一类型在同一画面位置 14 天内误报 >= 3 次，以后在这里降一级提醒
-         （火情类除外，永不降级）。回复“收到”只停止催办。
+         （火情类除外，永不降级）。回复“收到”只停止催办；回复“属实”记为真实事件。
+         误报 / 属实还会通知 on_ack 回调，跌倒样本库据此给样本打标签，用于再训练骨架模型。
 """
 import json, os, threading, time
 
@@ -21,7 +22,7 @@ FAMILY = {
     'child_danger': 'child', 'child_danger_watched': 'child', 'child_alone': 'child',
     'baby_cry': 'baby', 'night_wander': 'night',
     'cat_zone': 'pet_zone', 'pet_distress': 'pet', 'pet_unseen': 'pet',
-    'absence': 'absence', 'stream_down': 'system',
+    'absence': 'absence', 'stream_down': 'system', 'view_shift': 'system',
     'fall_suspect': 'person_down',
     'routine_late': 'routine', 'routine_low': 'routine', 'routine_night': 'routine',
 }
@@ -63,6 +64,7 @@ class IncidentManager:
         self.fb_path = os.path.join(events_dir, 'feedback.jsonl')
         self._lock = threading.RLock()
         self.feedback = self._load_feedback()
+        self.on_ack = []              # 回调 fn(incident, kind)：主人确认后通知其他模块
 
     # ---------- 误报学习 ----------
     def _load_feedback(self):
@@ -158,21 +160,29 @@ class IncidentManager:
 
     # ---------- 主人回复 ----------
     def ack(self, kind, families=None):
-        """kind: 'ok' 收到 / 'false' 误报 / 'me' 是我本人；返回处理了几个事件"""
+        """kind: 'ok' 收到 / 'false' 误报 / 'true' 属实 / 'me' 是我本人；返回处理了几个事件"""
         now = time.time()
         with self._lock:
-            targets = [i for i in self.open.values() if i.acked is None
+            # “属实”可以跟在“收到”之后补充
+            ackable = (None, 'ok') if kind == 'true' else (None,)
+            targets = [i for i in self.open.values() if i.acked in ackable
                        and (families is None or i.family in families)]
             if not targets:
                 return 0
-            if kind in ('ok', 'false'):
+            if kind in ('ok', 'false', 'true'):
                 # 主人回复的通常是最近收到的那条
                 targets = [max(targets, key=lambda i: i.last_notified)]
             for inc in targets:
                 inc.acked = kind
                 if kind == 'false':
                     self._record_false(inc, now)
-            return len(targets)
+        for inc in targets:
+            for fn in self.on_ack:
+                try:
+                    fn(inc, kind)
+                except Exception as e:
+                    print('[incident] on_ack 回调出错：', e)
+        return len(targets)
 
     def highest_open(self):
         with self._lock:

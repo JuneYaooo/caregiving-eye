@@ -17,6 +17,10 @@ fall_end 是身体着地；一段视频有多次跌倒就写多行；日常活�
   负样本  其余时刻，以及所有日常活动视频
 训练时随机丢帧（模拟 2.5–10 fps 的检测频率）、丢关键点、左右镜像、缩放、小角度旋转。
 
+家里的样本：执事每次报跌倒 / 疑似跌倒都会把前后约 12 秒的关键点存到 events/samples，
+主人回复“没事”标为误报（label 0）、回复“属实”标为真跌倒（label 1），也可以直接改 .json 里的 label。
+加 --samples events/samples 一起训练；未标注的样本跳过。误报样本是最有价值的负样本。
+
 先按视频划出 20% 做验证并打印指标，再用全部数据按同样轮数重训一遍导出（--no-final 跳过）。
 """
 import argparse, csv, os, random, sys
@@ -28,11 +32,32 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.abspath(os.path.join(HERE, '..', '..')))
 from stgcn import STGCN                                                     # noqa: E402
-from abilities.fall_gcn import resample, normalize, WINDOW_SEC, T, V, FLIP  # noqa: E402
+from mibutler.abilities.fall_gcn import resample, normalize, WINDOW_SEC, T, V, FLIP  # noqa: E402
 
 POS_BEFORE, POS_AFTER = 0.2, 2.0
 STEP = 0.1          # 窗口滑动步长（秒）
 NOISE = np.random.RandomState(0)
+
+
+def load_samples(sample_dir):
+    """读取执事保存的家里跌倒样本（只用已标注的）"""
+    import glob, json
+    clips = []
+    for meta_path in sorted(glob.glob(os.path.join(sample_dir, 'fall_*.json'))):
+        meta = json.load(open(meta_path, encoding='utf-8'))
+        if meta.get('label') not in (0, 1):
+            continue
+        npz = meta_path[:-5] + '.npz'
+        if not os.path.exists(npz):
+            continue
+        z = np.load(npz)
+        t = float(meta['t_event'])
+        falls = [(t - 1.0, t)] if meta['label'] == 1 else []
+        ts, kp = pad(z['ts'], z['kpts'])
+        clips.append({'name': os.path.basename(meta_path)[:-5], 'ts': ts, 'kpts': kp, 'falls': falls})
+    print('家里样本：%d 段（属实 %d / 误报 %d）' % (
+        len(clips), sum(1 for c in clips if c['falls']), sum(1 for c in clips if not c['falls'])))
+    return clips
 
 
 def load(kpts_dir, label_files):
@@ -242,7 +267,8 @@ def export(model, path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--kpts', default='data/kpts')
-    ap.add_argument('--labels', action='append', required=True)
+    ap.add_argument('--labels', action='append', default=[])
+    ap.add_argument('--samples', action='append', default=[], help='执事保存的样本目录，如 events/samples')
     ap.add_argument('--out', default='models/fall_stgcn.onnx')
     ap.add_argument('--epochs', type=int, default=60)
     ap.add_argument('--val-frac', type=float, default=0.2)
@@ -252,6 +278,8 @@ def main():
 
     torch.set_num_threads(max(1, os.cpu_count() // 2))
     clips = load(args.kpts, args.labels)
+    for d in args.samples:
+        clips += load_samples(d)
     if not clips:
         sys.exit('没有可用数据')
     rng = random.Random(args.seed)

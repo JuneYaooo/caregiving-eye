@@ -74,7 +74,7 @@ python -m pip install "supervision>=0.20,<0.30"
 ### 登录与查询设备
 
 ```powershell
-python mi_login.py
+python main.py login
 ```
 
 首次登录可能触发短信验证，按终端提示完成。成功后会生成本地 `mi_creds.json`，其中包含 `userId` 与 `passToken` 等凭据。
@@ -82,12 +82,12 @@ python mi_login.py
 使用仓库已有的 `MiApi` 查询设备并保存到本地：
 
 ```powershell
-python -c "import json; from pathlib import Path; from mi_api import MiApi, load_creds; Path('mi_devices.json').write_text(json.dumps(MiApi(load_creds()).device_list(), ensure_ascii=False, indent=2), encoding='utf-8')"
+python main.py devices
 ```
 
 在 `mi_devices.json` 中找到摄像头的 `did`、`localip`、`model`，补入 `.env` 的 `CAMERA_DID`、`CAMERA_IP`、`CAMERA_MODEL`。当前仓库的 `MiApi` 登录查询流程使用国内米家服务；其他地区账号需自行适配。
 
-`mi_creds.json` 和 `mi_devices.json` 都包含敏感信息，已被 Git 忽略，不要粘贴到 Issue。旧的 `pull_mi_devices.py` 依赖额外的 `micloud` 包，且不自动读取 `.env`；本指南使用上面的查询方式。
+`mi_creds.json` 和 `mi_devices.json` 都包含敏感信息，已被 Git 忽略，不要粘贴到 Issue。
 
 ### 配置 go2rtc
 
@@ -128,9 +128,21 @@ streams:
 
 在浏览器打开 `http://127.0.0.1:1984` 检查 `living` 是否出流。H.265 在部分浏览器中无法直接预览，可以继续使用下一步的 OpenCV 管线检查。
 
-这里使用显式启动命令：现有 `scripts/start_stack.bat` 会切换到 `scripts/` 目录，不能直接找到按本指南放在根目录的二进制与配置。
+调通以后不必每次开两个终端：`python main.py serve` 会自动拉起仓库根目录里的 `go2rtc.exe` 和 `xiaomi-onvif.exe`（参数同上），再启动执事，三者任何一个退出都会自动重启。只想启动视频和云台栈时，也可以双击 `scripts\windows\start_stack.bat`。
 
-Windows 防火墙需要允许实际取流进程的局域网通信，尤其是摄像头 CS2 握手的 UDP 回包。出现系统提示时，为 go2rtc 允许可信的专用网络访问。`scripts/install_firewall.ps1` 只添加 Python 的入站规则，不能替代 go2rtc 自身的网络放行。
+> [!IMPORTANT]
+> `go2rtc.yaml` 里 `api` 和 `rtsp` 都写 `127.0.0.1`、云台桥写 `-camera=living=127.0.0.1:8891`，视频流和云台控制就只有本机能访问。如果写成 `:8554` 或 `0.0.0.0`，同一 Wi-Fi 下的任何设备都能直接看画面、转云台。确实需要让局域网里的 NVR 读取时，再给 RTSP 加上用户名和密码：
+>
+> ```yaml
+> rtsp:
+>   listen: ":8554"
+>   username: "butler"
+>   password: "换成一个长密码"
+> ```
+>
+> 同时把 `.env` 的 `RTSP_URL` 改成 `rtsp://butler:密码@127.0.0.1:8554/living`。
+
+Windows 防火墙需要允许实际取流进程的局域网通信，尤其是摄像头 CS2 握手的 UDP 回包。出现系统提示时，为 go2rtc 允许可信的专用网络访问。`scripts/windows/install_firewall.ps1` 只添加 Python 的入站规则，不能替代 go2rtc 自身的网络放行。
 
 ## 3. 运行检测与提醒
 
@@ -139,29 +151,27 @@ Windows 防火墙需要允许实际取流进程的局域网通信，尤其是摄
 在第三个终端进入仓库目录，使用安装依赖的 Python 环境运行：
 
 ```powershell
-python care_pipeline.py --source rtsp://127.0.0.1:8554/living --no-display
+python main.py check --source rtsp://127.0.0.1:8554/living
 ```
 
-程序会加载模型并预热视频。H.265 中途入流可能暂时花屏，等待关键帧后再判断。依赖使用 `opencv-python-headless`，因此保留 `--no-display`；需要图形预览时应改用带 GUI 支持的 OpenCV 包。
+程序会读约 60 帧，打印分辨率、帧率、每帧推理耗时和检出的人 / 猫狗。H.265 中途入流可能暂时花屏，等待关键帧后再判断。也可以用 `--image 某张图.jpg` 只测模型。
 
 保持拉流，在另一个终端测试云台：
 
 ```powershell
-python onvif_ptz.py right 1.2
-python onvif_ptz.py stop
+python main.py ptz right 1.2
+python main.py ptz stop
 ```
 
 角度随机型、速度与持续时间变化，先观察实际转动范围。
 
-### 体验 v2 执事原型
-
-停止基础管线后再运行 v2：
+### 启动执事
 
 ```powershell
-python care_v2.py --source rtsp://127.0.0.1:8554/living --no-display
+python main.py run --source rtsp://127.0.0.1:8554/living
 ```
 
-v2 接入 `Butler` 模式引擎、IoU 跟踪、姿态与区域规则。常见配置：
+执事接入 `Butler` 模式引擎、IoU 跟踪、姿态与区域规则。常见配置：
 
 | 配置 | 用途 |
 | --- | --- |
@@ -221,13 +231,13 @@ Copy-Item zones.example.json zones.json
 
 ### 查看事件与日报
 
-v2 默认将每条提醒写入 `events/alerts.jsonl`，结案的事件写入 `events/incidents.jsonl`（含持续时长、是否确认、快照与录像）。主人回复的“没事”记录在 `events/feedback.jsonl`，用于学习误报位置。重要事件会保存快照 `snap_*.jpg`，跌倒、入侵、火情、突发不适、儿童危险还会保存事件前后的短视频 `events/clips/clip_*.mp4`，路径记录在事件的 `clip` 字段。查看本地记录无需配置机器人。执事运行时会在本机开一个指令入口 `http://127.0.0.1:8766/command`（端口见 `COMMAND_PORT`），机器人把主人的回复 POST 到这里即可；也可以直接运行 `python butler.py cmd 没事`。
+执事默认将每条提醒写入 `events/alerts.jsonl`，结案的事件写入 `events/incidents.jsonl`（含持续时长、是否确认、快照与录像）。主人回复的“没事”记录在 `events/feedback.jsonl`，用于学习误报位置。重要事件会保存快照 `snap_*.jpg`，跌倒、入侵、火情、突发不适、儿童危险还会保存事件前后的短视频 `events/clips/clip_*.mp4`，路径记录在事件的 `clip` 字段。查看本地记录无需配置机器人。执事运行时会在本机开一个指令入口 `http://127.0.0.1:8766/command`（端口见 `COMMAND_PORT`），机器人把主人的回复 POST 到这里即可；也可以直接运行 `python main.py cmd 没事`。回复 `属实` 表示确认是真事件。
 
 ```powershell
 # 汇总今天的事件与活动
-python report.py
+python main.py report
 # 汇总指定日期
-python report.py 20261031
+python main.py report 20261031
 ```
 
 执事每天 `REPORT_AT`（默认 21:30）自动生成日报并推送摘要。日报包含：
@@ -236,7 +246,7 @@ python report.py 20261031
 - 宠物与家人的活动总结：出现次数、画面中时长、活跃时长、最活跃时段、各区域停留次数与时长、24 小时活跃度条。
 - 热力图 `events/report_heatmap_pet_YYYYMMDD.png`、`report_heatmap_person_YYYYMMDD.png`，叠加在当天自动保存的无人底图上。
 
-活动数据每 5 分钟落盘一次，程序重启会接着当天的数据继续累计。云台转动后热力图位置会错开，需要统计宠物活动时尽量固定机位。基础管线的日志格式不同，不会进入这个日报。
+活动数据每 5 分钟落盘一次，程序重启会接着当天的数据继续累计。云台转动后热力图位置会错开，需要统计宠物活动时尽量固定机位。
 
 ### 可选：飞书、微信与 QQ 机器人提醒
 
@@ -272,7 +282,7 @@ python report.py 20261031
 <details>
 <summary>协议与登录排错备忘</summary>
 
-- 小米云 API 使用 RC4 drop1024 变体；仓库的 `mi_api.py` 包含对应实现。
+- 小米云 API 使用 RC4 drop1024 变体；仓库的 `mibutler/camera/mi_api.py` 包含对应实现。
 - 云端请求客户端禁用了环境代理继承；遇到登录问题时一并检查网络与账号地区。
 - 二次验证的 verify 参数需要放在 query string，直接放入表单可能导致验证循环。
 - 部分固件会忽略自研 miss 客户端的电机命令；当前通过配套 ONVIF 桥控制云台。

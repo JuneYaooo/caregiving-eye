@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from abilities.fall_gcn import EDGES, V   # noqa: E402
+from mibutler.abilities.fall_gcn import EDGES, V   # noqa: E402
 
 
 def adjacency():

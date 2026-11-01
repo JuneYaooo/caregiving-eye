@@ -7,7 +7,7 @@ TRACKER=bytetrack 时使用 roboflow/supervision 的 ByteTrack（MIT，纯 Pytho
 两者对外接口一致：update(dets, now) -> [Track]，Track 有 tid / cls / bbox / hits / center()。
 """
 import numpy as np
-from simple_tracker import SimpleTracker, Track
+from mibutler.vision.tracker import SimpleTracker, Track
 
 
 class ByteTrackAdapter:

@@ -15,7 +15,7 @@ import collections, os
 class FireSmokeDetector:
     def __init__(self, model_path, class_names=('smoke', 'fire'), score_th=0.45,
                  window_sec=6.0, min_hits=3, confirm_sec=15.0, min_area_frac=0.0005):
-        from care_pipeline import YoloOnnx
+        from mibutler.vision.yolo import YoloOnnx
         self.model = YoloOnnx(model_path)
         self.names = list(class_names)
         self.score_th = score_th

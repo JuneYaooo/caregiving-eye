@@ -15,7 +15,7 @@
 [![Abilities](https://img.shields.io/badge/Abilities-20%2B-B08D57)](#三种场景执事都在做什么)
 [![License](https://img.shields.io/badge/License-MIT-343434)](./LICENSE)
 
-[三种场景](#三种场景执事都在做什么) · [怎样工作](#执事怎样工作) · [调度](#调度省算力长期跑) · [快速开始](#快速开始) · [回复指令](#提醒和回复) · [开源组件](#用到的开源项目) · [常见问题](./docs/getting-started.md#常见问题)
+[三种场景](#三种场景执事都在做什么) · [怎样工作](#执事怎样工作) · [调度](#调度省算力长期跑) · [快速开始](#快速开始) · [回复指令](#提醒和回复) · [开源组件](#用到的开源项目) · [代码架构](./docs/architecture.md) · [常见问题](./docs/getting-started.md#常见问题)
 
 </div>
 
@@ -71,7 +71,7 @@
 </tr>
 </table>
 
-所有模式都会把事件写进本地记录，重要事件附快照和前后约 25 秒的短视频。运行 `python report.py` 可以生成日报，内容包括当天事件、宠物与家人的活动总结和热力图。各模式具体启用哪些能力，见 [接入指南](./docs/getting-started.md#各模式启用的能力)。
+所有模式都会把事件写进本地记录，重要事件附快照和前后约 25 秒的短视频。运行 `python main.py report` 可以生成日报，内容包括当天事件、宠物与家人的活动总结和热力图。各模式具体启用哪些能力，见 [接入指南](./docs/getting-started.md#各模式启用的能力)。
 
 > 所有判断都由规则和开源模型组合完成，需要按自家机位标定区域、校准阈值，可能误报或漏报。**它不能替代专业监护设备或消防报警设备。**
 
@@ -126,7 +126,7 @@ flowchart TB
 
 ### 调度：省算力，长期跑
 
-能力一多，就要决定每一刻跑哪些模型、跑多快。这部分由调度层（`brain/`）负责：
+能力一多，就要决定每一刻跑哪些模型、跑多快。这部分由调度层（`mibutler/brain/`）负责：
 
 | 情况 | 做法 |
 | --- | --- |
@@ -214,18 +214,20 @@ flowchart LR
 依赖、模型和 RTSP 视频流准备好以后，在仓库根目录运行：
 
 ```powershell
-# 1. 先用基础管线确认视频与模型正常
-python care_pipeline.py --source rtsp://127.0.0.1:8554/living --no-display
+# 1. 先确认视频流和模型正常：读几十帧，打印帧率和检测结果
+python main.py check --source rtsp://127.0.0.1:8554/living
 
-# 2. 停掉上面的管线，启动执事（启动日志会列出值班表和实际启用的能力）
-python care_v2.py --source rtsp://127.0.0.1:8554/living
+# 2. 启动执事（启动日志会列出值班表和实际启用的能力）
+python main.py run --source rtsp://127.0.0.1:8554/living
 
 # 也可以用自家录像回放来校准区域和阈值
-python care_v2.py --source my_living_room.mp4
+python main.py run --source my_living_room.mp4
 
 # 3. 随时生成今天的日报：事件 + 宠物 / 家人活动 + 热力图
-python report.py
+python main.py report
 ```
+
+调好以后改用守护模式长期值守：`python main.py serve` 会连同 go2rtc、云台桥一起拉起，任何一个崩溃或卡死都会自动重启并通知你；`scripts\windows\install_autostart.ps1` 可以设成开机自启。详见 [长期运行](./docs/brain.md#6-长期运行)。
 
 火焰烟雾、声音事件和 ByteTrack 跟踪是可选能力：放好对应模型或装好依赖就会自动启用，缺了就跳过，不影响其他功能。下载方式见 [可选模型](./docs/getting-started.md#可选模型按需下载缺了对应能力会自动跳过)。
 
@@ -233,28 +235,20 @@ python report.py
 <summary>项目结构</summary>
 
 ```text
-care_v2.py          执事主程序：组件装配 + 值班表
-butler.py           值班模式引擎、提醒措辞、推送、主人指令
-brain/
-  runtime.py        任务调度：周期 / 触发 / 一次性 / 每日，cpu 与 io 两条车道
-  frames.py         拉流服务：只留最新帧，断流重连
-  gate.py           动静判断与警觉等级
-  incidents.py      事件研判：合并、升级、催办、结案、学误报
-  upkeep.py         磁盘清理、日志轮转、心跳
-  ptz.py            云台独占控制与复位
-report.py           日报：事件汇总、活动总结、热力图
-abilities/
-  fire.py           火焰 / 烟雾视觉检测
-  audio.py          声音事件（YAMNet）
-  illness.py        突发不适多信号判断
-  child.py          儿童判定与危险区域
-  pet.py            宠物 / 家人活动记录与热力图
-  clips.py          事件前后短视频存证
-  tracking.py       跟踪器（内置 IoU / 可选 ByteTrack）
-care_pipeline.py    基础检测管线与 ONNX 推理
-onvif_ptz.py        云台控制
-mi_login.py 等      米家登录与设备查询
+main.py             命令行入口：run / serve / health / check / login / devices / ptz / report / cmd
+mibutler/
+  app.py            组装：模型、服务、能力；信号交给研判层；主循环
+  duties/           值班任务（值班表在 duties/__init__.py）
+  brain/            调度、拉流、警觉等级、事件研判、云台、保养、守护
+  abilities/        能力：跌倒、不适、儿童、火焰、声音、活动、作息、存证
+  vision/           YOLO 推理、跟踪器
+  camera/           米家登录、设备查询、局域网发现、ONVIF 云台
+  butler.py         值班模式、提醒措辞、推送、主人指令
+  report.py         日报
+scripts/            跌倒模型训练、Windows 启动与自启脚本
 ```
+
+各目录的分工、一条提醒的完整路径、怎样加一项新能力，见 [代码架构](./docs/architecture.md)。
 
 </details>
 
@@ -265,9 +259,10 @@ mi_login.py 等      米家登录与设备查询
 执事运行时会在本机开一个指令入口 `http://127.0.0.1:8766/command`，只监听本机，不对局域网开放。机器人收到你的回复后转发到这里即可，也可以在命令行里直接发：
 
 ```powershell
-python butler.py cmd 没事        # 记为误报，同一位置误报多了会自动降级
-python butler.py cmd 收到        # 停止催办
-python butler.py cmd 是我        # 解除入侵提醒，切到在家照护
+python main.py cmd 没事        # 记为误报，同一位置误报多了会自动降级
+python main.py cmd 收到        # 停止催办
+python main.py cmd 属实        # 确认是真事件（跌倒样本会标为真跌倒，用于再训练）
+python main.py cmd 是我        # 解除入侵提醒，切到在家照护
 curl -d "状态" http://127.0.0.1:8766/command
 ```
 
