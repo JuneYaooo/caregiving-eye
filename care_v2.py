@@ -201,6 +201,9 @@ def main():
     sched = Scheduler(io_workers=2, budget=float(cfg('TICK_BUDGET', 0.6)))
     tracker = make_tracker(cfg('TRACKER', 'iou'), fps=3, max_misses=DETECT_EVERY[IDLE] * 3)
     psm = PostureSM()
+    # 家具化降级: 从未自主移动过的人形 track (雕像/摆件/红外噪声) 没有跌倒/久卧/入侵告警资格
+    MOBILE_TH = float(cfg('MOBILE_TH', 0.04))  # 位移超过画面宽度的该比例视为"动过"
+    mobile_seen = {}  # tid -> {'ax','ay','moved'}
     gate, level = MotionGate(), AlertLevel(hold=float(cfg('CALM_DOWN_SEC', 30)))
     ptz = PtzController(enabled=args.follow)
     fire = FireSmokeDetector.from_env(cfg)
@@ -315,9 +318,16 @@ def main():
                 i = SimpleTracker._iou(t.bbox, p['bbox'])
                 if i > bi:
                     best, bi = p, i
+            # 自主移动判定: 锚点位移超阈值才算"动过", 一票获得告警资格
+            cx, cy = t.center()
+            m = mobile_seen.setdefault(t.tid, {'ax': cx, 'ay': cy, 'moved': False})
+            if abs(cx - m['ax']) + abs(cy - m['ay']) > MOBILE_TH * c.W:
+                m['ax'], m['ay'], m['moved'] = cx, cy, True
             k = best.get('kpts') if best else None
             evt = psm.update(t.tid, k, t.bbox, c.frame_ts)
             c.kpts[t.tid], c.posture[t.tid] = k, psm.sm[t.tid]['state']
+            if not m['moved']:
+                continue  # 家具化: 没动过就不具备跌倒/久卧告警资格
             if evt == 'fall':
                 c.fall_ts[t.tid] = time.time()
                 signal('fall', 'CRITICAL', '判断有人跌倒（#%d），已抓拍并录像。' % t.tid,
@@ -329,6 +339,9 @@ def main():
         for tid in list(psm.sm):
             if tid not in tracker.tracks:
                 psm.sm.pop(tid)
+        for tid in list(mobile_seen):
+            if tid not in tracker.tracks:
+                mobile_seen.pop(tid)
 
     def t_fire(c):
         frame, ts, _ = svc['frames'].latest()
@@ -366,6 +379,8 @@ def main():
         for t in c.persons:
             if t.hits < 8:
                 continue
+            if not mobile_seen.get(t.tid, {}).get('moved'):
+                continue  # 家具化: 静止摆件不算入侵者
             signal('intrusion', 'GUARD', '家中无人，但检测到移动的人形（#%d），已抓拍并录像。'
                    '若是您本人，回复"是我"。' % t.tid, pt=t.center())
             dx = (t.center()[0] - c.W / 2) / c.W
@@ -378,6 +393,8 @@ def main():
         a = svc['audio']
         distress = bool(a and a.heard('distress', 30))
         for t in c.persons:
+            if not mobile_seen.get(t.tid, {}).get('moved'):
+                continue  # 家具化: 静止摆件不参与突发不适研判
             r = illness.update(t.tid, c.kpts.get(t.tid), t.bbox, c.posture.get(t.tid, 'unknown'),
                                t.center(), c.zones if c.zones_valid else {}, time.time(), in_poly,
                                fell_recently=time.time() - c.fall_ts.get(t.tid, 0) < 600,
