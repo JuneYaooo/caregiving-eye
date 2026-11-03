@@ -282,6 +282,7 @@ python main.py report 20261031
 | 火焰烟雾误报 | 阳光、红色物体、灯光都可能误检；提高 `FIRE_SCORE`，或避开窗户直射画面 |
 | 声音事件没反应 | `ffmpeg` 是否在 PATH；状态行的 `audio=` 分贝是否变化；go2rtc 流是否带音频 |
 | 儿童判定不准 | 先填 `CHILD_HEIGHT_BAND`，调 `CHILD_LEG_RATIO`；侧身、坐着时不参与判定 |
+| go2rtc 报 `unsupported model`（如 `chuangmi.camera.v6`） | 该型号为 miIO + 云端 P2P 机型，本地没有 CS2 直连通道，当前版本不支持；伪装成其它 `model` 实测会 panic 或拉流超时，完整实测记录见 [#1](https://github.com/JuneYaooo/caregiving-eye/issues/1) |
 
 <details>
 <summary>协议与登录排错备忘</summary>
