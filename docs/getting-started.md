@@ -71,6 +71,18 @@ python -m pip install "supervision>=0.20,<0.30"
 
 需要云台控制时必须使用这套补丁版；普通 go2rtc 版本不一定包含小米 PTZ 端点。上游配置说明见 [xiaomi-onvif](https://github.com/SincereXIA/xiaomi-onvif)。
 
+### 机型兼容
+
+米执事不自己处理视频协议，取流完全依赖 go2rtc 的 `xiaomi://` 源，能不能接进来由上游决定。上游按协议把米家摄像头分成三档，完整名单见 go2rtc 的 [Known Xiaomi cameras](https://github.com/AlexxIT/go2rtc/issues/1982)：
+
+| 档位 | 协议 | 典型机型 | 米执事的情况 |
+| --- | --- | --- | --- |
+| 直连 | CS2（2019 年以后的大部分机型） | 小米智能摄像机 3 云台版 `chuangmi.camera.069a01`、2 云台版 `039c01`、C200 `046c04`、C300 `72ac1`、C700 `81ac1`、`isa.camera.hlc6/hlc7` 等 | 本项目在 3 云台版上实测；同档其他机型按上游名单推断可用，云台控制还要看固件是否响应 ONVIF 桥 |
+| 有限支持 | TUTK（上游的 `xiaomi/legacy` 或 `xiaomi/miss`） | 米家云台版 `chuangmi.camera.v2`、小白 `xiaobai`、IMILAB A1 `ipc019e`、大方 `isa.camera.df3`、小方 `isc5`、Aqara G2 `lumi.camera.gwagl01` | 上游按型号硬编码握手，只认白名单里的型号；画质、音频可能受限，本项目未实测 |
+| 不支持 | 老 TUTK 固件，上游未适配 | 小白增强版 `chuangmi.camera.v6`、叮零猫眼 `loock.cateye.v01` | 日志报 `xiaomi: unsupported model`，换 `model=` 伪装也不行，需要等上游单独适配（v6 见 [go2rtc #2119](https://github.com/AlexxIT/go2rtc/issues/2119)） |
+
+同一型号的不同固件可能走不同协议：`chuangmi.camera.v2` 和 `isa.camera.df3` 新固件走 miss、旧固件走 legacy，go2rtc 会自动回退。`model=` 必须填 `mi_devices.json` 里的真实型号，填成别的型号只会换一种报错。遇到名单之外的机型，先去上游名单里查，能接通的话欢迎回到本仓库补一行实测记录。
+
 ### 登录与查询设备
 
 ```powershell
@@ -270,6 +282,7 @@ python main.py report 20261031
 | 现象 | 优先检查 |
 | --- | --- |
 | 小米 PTZ 接口返回 `404` | 是否下载了 xiaomi-onvif 的配套补丁版 go2rtc |
+| 日志报 `xiaomi: unsupported model` | 机型不在上游 go2rtc 的支持名单里，见 [机型兼容](#机型兼容)；改 `model=` 伪装无效 |
 | 登录或视频源返回 `401` | `xiaomi:` 下是否填入 `passToken`，凭据是否过期 |
 | 云台提示 `no active connection` | 保持至少一个 RTSP 消费者拉流，再发指令 |
 | 视频连接卡住 | 摄像头 IP、同网段互通、go2rtc 的 Windows 防火墙规则、UDP 回包 |
